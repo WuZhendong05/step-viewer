@@ -1,0 +1,23 @@
+# ---- 密钥与运行数据（红线，永不入库）----
+secrets/
+logs/
+uploads/
+__cadgen__/
+samples/
+step/
+docs/
+
+# ---- 构建产物 ----
+node_modules/
+dist/
+
+# ---- Python ----
+__pycache__/
+*.pyc
+.venv/
+
+# ---- 杂项 ----
+*.log
+.DS_Store
+Thumbs.db
+.workbuddy/
