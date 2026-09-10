@@ -399,14 +399,33 @@ class Handler(BaseHTTPRequestHandler):
         self._send_bytes(200, data, content_type, disposition=disposition)
 
     def _artifact_build(self, q):
+        import time as _t
+
+        timing = os.environ.get("VIEWER_TIMING_LOG") == "1"
+        t0 = _t.perf_counter()
         root_dir = self._root_dir(q)
         catalog = _Ctx.backend.read_catalog(root_dir=root_dir, file_ref=q.get("file", ""))
+        t_cat1 = _t.perf_counter()
         resolved = _Ctx.backend.resolve_root(root_dir)
+        t_root = _t.perf_counter()
         result = _Ctx.backend.resolve_artifact(q.get("file", ""), q.get("force", "") == "1", resolved, catalog)
+        t_build = _t.perf_counter()
         # Refresh the catalog AFTER the build (even on failure) and attach it, matching Node.
         next_catalog = _Ctx.backend.read_catalog(root_dir=root_dir, file_ref=q.get("file", ""))
+        t_cat2 = _t.perf_counter()
         status = 500 if result.get("ok") is False else 200
         self._send_json(status, {**result, "catalog": next_catalog})
+        if timing:
+            import sys as _sys
+            t_end = _t.perf_counter()
+            print(
+                f"[timing] artifact catalogPre={t_cat1 - t0:.3f}s "
+                f"resolveRoot={t_root - t_cat1:.3f}s build={t_build - t_root:.3f}s "
+                f"catalogPost={t_cat2 - t_build:.3f}s send={t_end - t_cat2:.3f}s "
+                f"total={t_end - t0:.3f}s state={result.get('state')} "
+                f"file={(q.get('file') or '')[:28]}",
+                file=_sys.stderr,
+            )
 
     def _cad_inject(self, q):
         """POST /__cad/inject?task=&file= — ensure the render package for a landed

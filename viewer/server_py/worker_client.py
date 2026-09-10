@@ -71,6 +71,10 @@ class CadWorker:
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
+        # Pool slot: a NON-BLOCKING ownership flag used by the pool to tell whether
+        # this worker is idle. The actual request serialization still uses _lock;
+        # _slot is only a "is someone using me right now" signal for dispatch.
+        self._slot = threading.Lock()
         self._proc: subprocess.Popen | None = None
         self._next_id = 0
         self._invokes = 0
@@ -201,7 +205,13 @@ class CadWorker:
         """Send a request, respawning once on a TRANSPORT fault before giving up. A
         clean protocol-error response propagates without a respawn, and a TIMEOUT is
         never retried (the request itself is dead — recycling the worker is enough)."""
+        import sys as _sys
+        import time as _t
+
+        timing = os.environ.get("VIEWER_TIMING_LOG") == "1"
+        t0 = _t.perf_counter()
         with self._lock:
+            t_lock = _t.perf_counter()
             recycle = _recycle_after()
             if recycle and self._invokes >= recycle:
                 self._reap()  # bound OCP memory: recycle the warm process
@@ -214,6 +224,15 @@ class CadWorker:
                 self._reap()
                 result = self._send_once(repo_root, method, params)  # one clean retry
             self._invokes += 1
+            if timing:
+                # lockWait is pure queueing behind other builds in this ONE serial
+                # worker; rpc is the actual OCP work (parse + tessellate + inject).
+                t_done = _t.perf_counter()
+                print(
+                    f"[timing] worker lockWait={t_lock - t0:.3f}s "
+                    f"rpc={t_done - t_lock:.3f}s total={t_done - t0:.3f}s method={method}",
+                    file=_sys.stderr,
+                )
             return result
 
     def run_cadgen(self, module: str, args, repo_root: str) -> dict:
@@ -226,24 +245,70 @@ class CadWorker:
         return self._request(repo_root, "ping", {})
 
 
-_CLIENT: CadWorker | None = None
-_CLIENT_LOCK = threading.Lock()
+def _worker_count() -> int:
+    """Number of warm OCP worker processes (VIEWER_CAD_WORKERS).
+
+    OCP is single-threaded, so one worker = one serial build lane. cadgen's
+    generation lock is PER PACKAGE, so independent parts build safely in
+    parallel — the pool turns the single lane into N lanes. Default 1 keeps the
+    historical behaviour/memory profile; raise it on multi-core hosts.
+    """
+    try:
+        return max(1, int(os.environ.get("VIEWER_CAD_WORKERS", "1")))
+    except ValueError:
+        return 1
+
+
+_POOL: list[CadWorker] = []
+_POOL_LOCK = threading.Lock()
+_RR = 0
+
+
+def _ensure_pool() -> list[CadWorker]:
+    global _POOL
+    with _POOL_LOCK:
+        want = _worker_count()
+        if len(_POOL) < want:
+            import atexit
+
+            for _ in range(want - len(_POOL)):
+                worker = CadWorker()
+                atexit.register(worker.close)
+                _POOL.append(worker)
+        return _POOL
+
+
+def _pick() -> CadWorker:
+    """Idle-first dispatch, round-robin fallback when every worker is busy."""
+    global _RR
+    pool = _ensure_pool()
+    for worker in pool:
+        if not worker._slot.locked():
+            return worker
+    with _POOL_LOCK:
+        worker = pool[_RR % len(pool)]
+        _RR += 1
+    return worker
 
 
 def get_client() -> CadWorker:
-    global _CLIENT
-    with _CLIENT_LOCK:
-        if _CLIENT is None:
-            _CLIENT = CadWorker()
-            import atexit
-
-            atexit.register(_CLIENT.close)
-        return _CLIENT
+    """Single-worker accessor (health checks / callers that want one lane)."""
+    return _ensure_pool()[0]
 
 
 def run_cadgen(module: str, args, repo_root: str) -> dict:
     """Warm-worker equivalent of :func:`cadgen_bridge.run_cadgen`. Raises
-    :class:`_WorkerError` on a transport/spawn fault (caller falls back to cold)."""
+    :class:`_WorkerError` on a transport/spawn fault (caller falls back to cold).
+
+    Dispatches to the least-busy worker in the pool: independent parts build in
+    parallel (cadgen locks per package), while a fully busy pool queues on the
+    picked worker's slot exactly like the old single-worker model.
+    """
     if not _worker_enabled():
         raise _WorkerError("warm worker disabled (VIEWER_CAD_WORKER=0)")
-    return get_client().run_cadgen(module, args, repo_root)
+    worker = _pick()
+    worker._slot.acquire()  # blocks only when every worker is busy (queueing)
+    try:
+        return worker.run_cadgen(module, args, repo_root)
+    finally:
+        worker._slot.release()

@@ -334,11 +334,25 @@ def _prewarm_job(job_id: str, file_name: str) -> None:
     job: the lazy build on first open remains the fallback.
     """
     _JOBS.set_prewarm(job_id, "running")
+    import time as _t
+
+    timing = os.environ.get("VIEWER_TIMING_LOG") == "1"
     try:
         path = f"/__cad/artifact?task={quote(job_id)}&file={quote(file_name)}"
         req = urllib.request.Request(_Ctx.prewarm_url + path, method="POST")
+        t0 = _t.perf_counter()
         with urllib.request.urlopen(req, timeout=_Ctx.prewarm_timeout) as resp:
-            payload = json.loads(resp.read().decode("utf-8") or "{}")
+            raw = resp.read()
+        t_http = _t.perf_counter()
+        payload = json.loads(raw.decode("utf-8") or "{}")
+        t_parse = _t.perf_counter()
+        if timing:
+            print(
+                f"[timing] prewarm http={t_http - t0:.3f}s parse={t_parse - t_http:.3f}s "
+                f"total={t_parse - t0:.3f}s bytes={len(raw)} state={payload.get('state')} "
+                f"job={job_id}",
+                file=sys.stderr,
+            )
         if _prewarm_payload_ok(payload):
             _JOBS.set_prewarm(job_id, "ready")
         else:
@@ -607,8 +621,10 @@ def main(argv=None):
                         help="disable background GLB prewarm (pure lazy generation)")
     parser.add_argument("--prewarm-url", default="",
                         help="viewer base URL for background prewarm (default http://127.0.0.1:<viewer-port>)")
-    parser.add_argument("--prewarm-workers", type=int, default=2,
-                        help="concurrent background prewarm builds (default 2)")
+    parser.add_argument("--prewarm-workers", type=int,
+                        default=int(os.environ.get("VIEWER_PREWARM_WORKERS", "2")),
+                        help="concurrent background prewarm builds "
+                             "(default 2, or $VIEWER_PREWARM_WORKERS)")
     parser.add_argument("--prewarm-timeout", type=int, default=300,
                         help="per-prewarm HTTP timeout in seconds (default 300)")
     args = parser.parse_args(argv)
