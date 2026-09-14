@@ -24,7 +24,7 @@ import { CAD_WORKSPACE_TOOLBAR_DESKTOP_WIDTH_CLASS } from "./ToolbarShell";
 import { StepExportDropdown } from "./StepExportDropdown";
 import { DisplayModeDropdown } from "../viewer/DisplayModeDropdown";
 import { ViewDirectionDropdown } from "../viewer/ViewDirectionDropdown";
-import { PartAlignmentIcon } from "../viewer/CadToolbarIcons";
+import { BoundingBoxIcon, PartAlignmentIcon } from "../viewer/CadToolbarIcons";
 
 const FLOATING_TOOL_BAR_SURFACE_CLASS =
   "cad-glass-surface border border-sidebar-border text-sidebar-foreground shadow-sm";
@@ -149,6 +149,9 @@ function DesktopFloatingToolBar({
   alignmentAvailable = false,
   alignmentEnabled = false,
   onToggleAlignment,
+  // 外包围盒 + 尺寸标注（纯几何量，任何模型都适用；见 viewer/boundingBoxGeometry.js）
+  boundingBoxEnabled = false,
+  onToggleBoundingBox,
   selectedEntry,
   onExportModelFile,
   fileAccessBusyKey = ""
@@ -368,6 +371,17 @@ function DesktopFloatingToolBar({
                 onClick={() => onToggleAlignment?.(!alignmentEnabled)}
               >
                 <PartAlignmentIcon className="size-4" strokeWidth={2} />
+              </ToolbarButton>
+
+              {/* 外包围盒 + 尺寸标注：画轴对齐包围盒并标注长/宽/高。
+                  纯几何量，圆类零件、装配体一样适用，所以不设 disabled。 */}
+              <ToolbarButton
+                label={boundingBoxEnabled ? "隐藏外包围盒与尺寸" : "显示外包围盒与尺寸标注"}
+                active={boundingBoxEnabled}
+                aria-pressed={boundingBoxEnabled}
+                onClick={() => onToggleBoundingBox?.(!boundingBoxEnabled)}
+              >
+                <BoundingBoxIcon className="size-4" strokeWidth={2} />
               </ToolbarButton>
 
               <StepExportDropdown

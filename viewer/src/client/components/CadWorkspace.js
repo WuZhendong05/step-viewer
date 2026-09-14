@@ -4710,6 +4710,38 @@ export default function CadWorkspace({
       cancelled = true;
     };
   }, [alignmentAvailable, alignmentEnabled, alignmentFrame]);
+  // ---------- 外包围盒 + 尺寸标注 ----------
+  // 与摆正开关同一套模式：会话级状态、不落盘。区别有两点：
+  //   1. 没有"可用性"判断 —— 包围盒是纯几何量，圆类零件和装配体一样成立（用户决策 2），
+  //      所以按钮永远可点；
+  //   2. **默认打开**（2026-09-14 用户决策）—— 打开零件就能看到外形尺寸，不用先点按钮。
+  const [boundingBoxEnabled, setBoundingBoxEnabled] = useState(true);
+  const handleToggleBoundingBox = useCallback((next) => {
+    setBoundingBoxEnabled(Boolean(next));
+  }, []);
+  useEffect(() => {
+    let cancelled = false;
+    let attempts = 0;
+    const run = () => {
+      if (cancelled) {
+        return;
+      }
+      const viewer = viewerRef.current;
+      if (!viewer) {
+        return;
+      }
+      attempts += 1;
+      // 关闭时不需要模型就绪（幂等），所以只有"开着但还没就绪"才继续重试。
+      const applied = viewer.setBoundingBoxEnabled?.(boundingBoxEnabled);
+      if (applied === false && attempts < 120) {
+        requestAnimationFrame(run);
+      }
+    };
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [boundingBoxEnabled]);
   // 双击特征叶子：高亮相关面 + 相机转到特征法向并聚焦 + 自动切"透视"显示模式
   // （盲槽等内部特征在实体模式下被面遮挡，透视 + 2.5px 描边才能看清）。
   // 无条件切换、不恢复原模式（2026-09-07 定稿）。
@@ -8484,6 +8516,8 @@ export default function CadWorkspace({
                 alignmentAvailable={alignmentAvailable}
                 alignmentEnabled={alignmentAvailable && alignmentEnabled}
                 onToggleAlignment={handleToggleAlignment}
+                boundingBoxEnabled={boundingBoxEnabled}
+                onToggleBoundingBox={handleToggleBoundingBox}
                 onExportModelFile={handleExportModelFile}
                 fileAccessBusyKey={fileAccessBusyKey}
               />

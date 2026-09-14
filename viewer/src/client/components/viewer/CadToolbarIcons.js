@@ -1,11 +1,12 @@
-// 底部浮动工具条上的两个自定义图标。
+// 底部浮动工具条上的三个自定义图标。
 //
 // 原本「切换视图」和「零件摆正」都用 lucide 的 Box，长得一模一样、无法区分。
 // 这里保留同一个立方体几何，各加一个特征：
 //   * 切换视图 —— 立方体顶面着色
 //   * 零件摆正 —— 立方体缩小下移，上方加一条带箭头的半圆弧（绕轴摆正）
+// 第三个「外包围盒 + 尺寸标注」另起一套几何（角括号 + 双向箭头），见文件末尾。
 //
-// 两个图标都用 currentColor，所以按钮高亮、深浅主题都自动跟随，不需要维护两套颜色。
+// 三个图标都用 currentColor，所以按钮高亮、深浅主题都自动跟随，不需要维护两套颜色。
 
 // lucide box 的几何（viewBox 0 0 24 24）。三条 path 原样保留，
 // 这样两个新图标与工具栏里其它 lucide 图标的笔形完全一致。
@@ -75,6 +76,42 @@ export function PartAlignmentIcon({ className, strokeWidth = 2, ...rest }) {
       </g>
       <path d={ALIGN_ARC_PATH} />
       <path d={ALIGN_ARROW_PATH} />
+    </svg>
+  );
+}
+
+// 外包围盒 + 尺寸标注：四个角括号（包围盒）+ 一条双向尺寸箭头（标注）。
+// 刻意不用立方体几何：工具条上已经有「切换视图」「零件摆正」两个立方体图标，
+// 再来一个就分不清了；角括号 + 双向箭头是"测量"的通用语义。
+const BBOX_BRACKETS = [
+  "M3 8.5 L3 3 L8.5 3",
+  "M15.5 3 L21 3 L21 8.5",
+  "M3 15.5 L3 21 L8.5 21",
+  "M15.5 21 L21 21 L21 15.5"
+];
+const BBOX_DIM_SHAFT = "M6.5 12 L17.5 12";
+const BBOX_DIM_ARROWS = ["M9 9.8 L6.5 12 L9 14.2", "M15 9.8 L17.5 12 L15 14.2"];
+
+export function BoundingBoxIcon({ className, strokeWidth = 2, ...rest }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={strokeWidth}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      {...rest}
+    >
+      {BBOX_BRACKETS.map((path) => (
+        <path key={path} d={path} />
+      ))}
+      <path d={BBOX_DIM_SHAFT} />
+      {BBOX_DIM_ARROWS.map((path) => (
+        <path key={path} d={path} />
+      ))}
     </svg>
   );
 }

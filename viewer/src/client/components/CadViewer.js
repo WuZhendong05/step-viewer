@@ -162,6 +162,11 @@ import {
 } from "cadjs/lib/themeSettings";
 import ViewPlaneControl from "./viewer/ViewPlaneControl";
 import AxesIndicator, { AlignmentAxesIndicator } from "./viewer/AxesIndicator";
+import BoundingBoxOverlay from "./viewer/BoundingBoxOverlay";
+import {
+  boundingBoxOverlayEqual,
+  buildBoundingBoxOverlay
+} from "./viewer/boundingBoxGeometry";
 import { useImplicitRaymarch } from "./viewer/hooks/useImplicitRaymarch";
 import { useViewerDrawingOverlay } from "./viewer/hooks/useViewerDrawingOverlay";
 import { useViewerPicking } from "./viewer/hooks/useViewerPicking";
@@ -2033,6 +2038,11 @@ const CadViewer = forwardRef(function CadViewer({
   // indicatorState 是给屏幕空间三角架用的每帧投影结果。会话级状态，不落盘。
   const alignmentFrameRef = useRef(null);
   const [alignmentIndicator, setAlignmentIndicator] = useState(null);
+  // ---------- 外包围盒 + 尺寸标注（见 viewer/boundingBoxGeometry.js）----------
+  // 开关是会话级、**默认打开**（2026-09-14 用户决策）：打开零件即可看到外形尺寸。
+  // ref 初值必须与 CadWorkspace 的 state 初值一致，否则首帧两者会打架。
+  const boundingBoxEnabledRef = useRef(true);
+  const [boundingBoxOverlay, setBoundingBoxOverlay] = useState(null);
   // 舞台/网格重算 floorZ 需要的最小上下文（构建场景时缓存）。
   const stageRefreshRef = useRef(null);
   const clipSettingsRef = useRef(normalizeStepClipSettings(null));
@@ -2474,6 +2484,8 @@ const CadViewer = forwardRef(function CadViewer({
     ));
   };
   const syncViewPlaneOrientation = (runtime = runtimeRef.current) => {
+    // 放在最前面：包围盒叠加层不依赖朝向对象是否可读（某些过渡帧里它会为空）。
+    syncBoundingBoxOverlay(runtime);
     const nextOrientation = readViewPlaneOrientation(runtime);
     if (!nextOrientation) {
       return;
@@ -2523,6 +2535,36 @@ const CadViewer = forwardRef(function CadViewer({
         && viewPlaneOrientationEqual(current.orientation, orientation)
         ? current
         : { left, top, orientation }
+    ));
+  };
+  // ---------- 外包围盒 + 尺寸标注叠加层 ----------
+  // 把 modelBounds 的 8 个角点投到屏幕（与摆正三角架同一套做法，都走
+  // modelGroup.localToWorld → project），所以摆正基座、模型偏移、视角旋转
+  // 全都自动带上，不需要在这里手写矩阵。纯计算在 boundingBoxGeometry.js。
+  const syncBoundingBoxOverlay = (runtime = runtimeRef.current) => {
+    if (!boundingBoxEnabledRef.current) {
+      setBoundingBoxOverlay((current) => (current === null ? current : null));
+      return;
+    }
+    const host = interactionHostRef.current;
+    const rect = host?.getBoundingClientRect?.();
+    const group = runtime?.modelGroup;
+    if (!runtime?.THREE || !runtime?.camera || !group || !runtime?.modelBounds
+      || !rect?.width || !rect?.height) {
+      setBoundingBoxOverlay((current) => (current === null ? current : null));
+      return;
+    }
+    group.updateWorldMatrix?.(true, false);
+    const next = buildBoundingBoxOverlay({
+      THREE: runtime.THREE,
+      camera: runtime.camera,
+      modelGroup: group,
+      bounds: runtime.modelBounds,
+      width: rect.width,
+      height: rect.height
+    });
+    setBoundingBoxOverlay((current) => (
+      boundingBoxOverlayEqual(current, next) ? current : next
     ));
   };
   // 摆正后零件最低点变了，网格/舞台要跟着落到新的最低面上。
@@ -2652,6 +2694,9 @@ const CadViewer = forwardRef(function CadViewer({
     }
     syncCameraZoomPercent(runtime);
     emitPerspectiveChange(runtime);
+    // 叠加层的坐标是"画布 CSS 像素"，容器尺寸一变就全部失效，必须重算。
+    // （顺带一提：摆正三角架也依赖容器 rect，但它没挂在这条路径上 —— 见本次改动说明。）
+    syncBoundingBoxOverlay(runtime);
   }, [syncCameraZoomPercent]);
   const applyZoomPercent = useCallback((nextZoomPercent) => {
     const runtime = runtimeRef.current;
@@ -3778,6 +3823,21 @@ const CadViewer = forwardRef(function CadViewer({
     },
     clearAlignmentFrame() {
       return clearAlignmentFrame();
+    },
+    // ---------- 外包围盒 + 尺寸标注 ----------
+    // 只改会话级开关并立刻重算一次。返回 false = 查看器/模型还没就绪，调用方下一帧重试
+    // （与 applyAlignmentFrame 同样的契约）。
+    setBoundingBoxEnabled(enabled) {
+      boundingBoxEnabledRef.current = Boolean(enabled);
+      if (boundingBoxEnabledRef.current
+        && (!runtimeRef.current?.modelBounds || !interactionHostRef.current)) {
+        return false;
+      }
+      syncBoundingBoxOverlay();
+      return true;
+    },
+    getBoundingBoxEnabled() {
+      return boundingBoxEnabledRef.current;
     },
     getPerspective() {
       return readScopedPerspectiveSnapshot(runtimeRef.current, {
@@ -5844,6 +5904,8 @@ const CadViewer = forwardRef(function CadViewer({
         indicator={alignmentIndicator}
         compact={compactViewPlane}
       />
+      {/* 外包围盒叠加层：z-20 低于坐标系 HUD（z-30），不遮住左下角三角架。 */}
+      <BoundingBoxOverlay overlay={boundingBoxOverlay} />
       {error ? (
         <p role="alert" className="cad-glass-popover pointer-events-none absolute left-4 top-24 z-20 rounded-[10px] border border-[var(--ui-error-bg)] px-4 py-3 text-sm text-[var(--ui-error-text)] shadow-[var(--ui-shadow-soft)] sm:top-20">
           {error}
