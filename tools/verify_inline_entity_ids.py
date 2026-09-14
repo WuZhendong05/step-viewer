@@ -3,8 +3,8 @@
 
 Two modes (OCP and pythonocc live in different interpreters):
 
-  # 1) One-time / refreshed ground truth — run under a pythonocc interpreter:
-  #    (D:/Anaconda/envs/gccad310/python.exe)
+  # 1) One-time / refreshed ground truth — run under a pythonocc interpreter
+  #    (an OCC-namespace Python, see README environment notes):
   python tools/verify_inline_entity_ids.py baseline <dir> [-o baseline.json]
 
   # 2) Regression check — run under the cadgen venv (OCP):

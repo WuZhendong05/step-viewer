@@ -7,6 +7,9 @@ samples/
 step/
 docs/
 
+# ---- 机器专属配置（模板 local.env.cmd.example 入库，实际配置不入库）----
+tools/local.env.cmd
+
 # ---- 构建产物 ----
 node_modules/
 dist/
