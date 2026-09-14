@@ -2689,15 +2689,25 @@ const CadViewer = forwardRef(function CadViewer({
   }, [perspectiveRef]);
   const handleViewportResize = useCallback(() => {
     const runtime = runtimeRef.current;
-    if (!syncRuntimeViewportFraming(runtime)) {
-      return;
+    // 相机重新取景只在视口确实需要重新适配时才有意义；但"屏幕空间叠加层重算"与它无关 ——
+    // 只要容器尺寸变了就必须做。两件事分开判断，别让前者的 early return 把后者一起跳过。
+    if (syncRuntimeViewportFraming(runtime)) {
+      syncCameraZoomPercent(runtime);
+      emitPerspectiveChange(runtime);
     }
-    syncCameraZoomPercent(runtime);
-    emitPerspectiveChange(runtime);
-    // 叠加层的坐标是"画布 CSS 像素"，容器尺寸一变就全部失效，必须重算。
-    // （顺带一提：摆正三角架也依赖容器 rect，但它没挂在这条路径上 —— 见本次改动说明。）
-    syncBoundingBoxOverlay(runtime);
-  }, [syncCameraZoomPercent]);
+    // 容器尺寸一变，依赖"画布 CSS 像素"的东西全部失效：
+    //   * 包围盒叠加层 —— 8 个角点投影到 CSS 像素坐标
+    //   * 摆正三角架 —— 锚点 left/top 由容器 rect 算出
+    // syncViewPlaneOrientation 的首行就是 syncBoundingBoxOverlay，所以调它一个就够，
+    // 顺带省掉一次重复投影。
+    //
+    // 为什么不能只靠现有链路：原先这里没调它，三角架的重算实际是"搭便车"——
+    // syncCameraZoomPercent 更新 zoom 百分比 → 触发 applyZoomPercent → 那里才调
+    // syncViewPlaneOrientation。但 syncCameraZoomPercent 会 Math.round 取整，
+    // 百分比整数不变时（等比缩放、或缓慢拖动窗口边缘）这条链路就断了，
+    // 三角架会停在旧位置。这里显式保证，不再依赖那个副作用。
+    syncViewPlaneOrientation(runtime);
+  }, [syncCameraZoomPercent, syncViewPlaneOrientation]);
   const applyZoomPercent = useCallback((nextZoomPercent) => {
     const runtime = runtimeRef.current;
     if (!setRuntimeZoomPercent(runtime, nextZoomPercent)) {
