@@ -49,6 +49,20 @@ const fmtDim = (v) => {
   return String(numeric.toFixed(2).replace(/\.?0+$/, ""));
 };
 
+// 方向向量渲染成 "[0.00, 0.00, -1.00]"（与原始特征 JSON 的书写习惯一致）。
+// 非 3 维 / 含非有限值 / 含 null 这类"能被 Number() 悄悄变成 0"的脏值 → 返回 ""，
+// 调用方据此不渲染该叶子（宁可不显示，也不要显示一个假的 0.00）。
+const isNumericComponent = (entry) => (typeof entry === "number" || typeof entry === "string")
+  && String(entry).trim() !== ""
+  && Number.isFinite(Number(entry));
+
+const fmtDirection = (value) => {
+  if (!Array.isArray(value) || value.length !== 3 || !value.every(isNumericComponent)) {
+    return "";
+  }
+  return `[${value.map((entry) => Number(entry).toFixed(2)).join(", ")}]`;
+};
+
 // ---------- enums ----------
 const DIRECTION_LABELS = Object.freeze({
   top: "上表面",
@@ -394,12 +408,24 @@ function buildOverview(part, isRound) {
   // 方类：几何信息 + 加工面信息 + 轮廓信息（含轮廓缺口槽）
   const partInfo = part.partGeometryInformation || {};
   const machined = part.machinedSurface || {};
+  // 主加工方向 = 主加工面法向、辅加工方向 = 摆正后的 +X（见 workbench/alignmentFrame.js）。
+  // 只有方类带这两个字段；缺字段时对应叶子直接不渲染。
+  const geometryLeaves = [
+    leafNode("info:sa", "表面积", `${fmtNum(partInfo.surfaceArea)} mm²`),
+    leafNode("info:vol", "体积", `${fmtNum(partInfo.volume)} mm³`),
+    leafNode("info:ba", "底面面积", `${fmtNum(partInfo.basalArea)} mm²`)
+  ];
+  for (const [label, key, id] of [
+    ["主加工方向", "primeDirection", "info:prime"],
+    ["辅加工方向", "assistantDirection", "info:assistant"]
+  ]) {
+    const rendered = fmtDirection(partInfo[key]);
+    if (rendered) {
+      geometryLeaves.push(leafNode(id, label, rendered));
+    }
+  }
   const infoChildren = [
-    branchNode("info:geometry", "几何信息", [
-      leafNode("info:sa", "表面积", `${fmtNum(partInfo.surfaceArea)} mm²`),
-      leafNode("info:vol", "体积", `${fmtNum(partInfo.volume)} mm³`),
-      leafNode("info:ba", "底面面积", `${fmtNum(partInfo.basalArea)} mm²`)
-    ]),
+    branchNode("info:geometry", "几何信息", geometryLeaves),
     branchNode("info:surface", "加工面信息", [
       leafNode("info:nms", "加工面数量", String(machined.numberOfMachiningSurface ?? "")),
       leafNode("info:nb", "斜面数量", String(machined.numberOfBevels ?? "")),

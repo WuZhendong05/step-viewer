@@ -927,6 +927,9 @@ export function useViewerRuntime({
         controls,
         stageGroup,
         viewGroup,
+        // 零件摆正基座：viewGroup.quaternion = preset × baseFrameQuaternion。
+        // null 表示未摆正（世界坐标系）。见 workbench/alignmentFrame.js。
+        baseFrameQuaternion: null,
         modelGroup,
         edgesGroup,
         facePickGroup,

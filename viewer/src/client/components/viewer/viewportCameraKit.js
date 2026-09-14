@@ -400,15 +400,19 @@ export function viewPlaneOrientationEqual(a, b, epsilon = 1e-4) {
   return true;
 }
 
-export function readViewPlaneOrientation(runtime) {
+export function readViewPlaneOrientation(runtime, { quaternion = null } = {}) {
   if (!runtime?.THREE || !runtime?.camera) {
     return null;
   }
   const inverseCameraRotation = runtime.camera.quaternion.clone().invert();
   // The model group rotates instead of the camera, so world axes are first
   // rotated by the model then projected through the (pinned) camera.
-  const rotation = runtime.viewGroup?.quaternion
-    ? inverseCameraRotation.clone().multiply(runtime.viewGroup.quaternion)
+  // `quaternion` overrides which model rotation to project through — the
+  // alignment indicator passes the preset part (base frame removed) so it shows
+  // the part's own XYZ instead of the world axes.
+  const modelRotation = quaternion || runtime.viewGroup?.quaternion;
+  const rotation = modelRotation
+    ? inverseCameraRotation.clone().multiply(modelRotation)
     : inverseCameraRotation;
   const projectAxis = (x, y, z) => {
     const projected = new runtime.THREE.Vector3(x, y, z).applyQuaternion(rotation);
@@ -432,14 +436,17 @@ export function getActiveViewPlaneFaceId(runtime) {
   }
   offset.normalize();
 
+  // 用 preset 部分（去掉"零件摆正"基座）：ViewCube 的面属于零件自身的坐标系，
+  // 摆正只改变"零件的哪个轴朝上"，不改变点击某个面所对应的预设。
+  const modelRotation = readViewPresetQuaternion(runtime);
   let bestId = "";
   let bestScore = -Infinity;
   for (const face of VIEW_PLANE_FACES) {
     // Face directions live in model space; the model group rotation maps them to
     // world space for comparison against the (pinned) camera.
     const direction = new runtime.THREE.Vector3(...face.direction).normalize();
-    if (runtime.viewGroup?.quaternion) {
-      direction.applyQuaternion(runtime.viewGroup.quaternion);
+    if (modelRotation) {
+      direction.applyQuaternion(modelRotation);
     }
     const score = offset.dot(direction);
     if (score > bestScore) {
@@ -448,6 +455,47 @@ export function getActiveViewPlaneFaceId(runtime) {
     }
   }
   return bestScore >= VIEW_PLANE_ACTIVE_DOT_THRESHOLD ? bestId : "";
+}
+
+/**
+ * 当前 viewGroup 四元数里"去掉摆正基座"的部分（= 真正由视图预设决定的旋转）。
+ * viewGroup.quaternion = preset × base ⇒ preset = viewGroup.quaternion × base⁻¹。
+ * 快照保存、ViewCube 高亮、预设匹配都应使用它；只有"世界坐标轴在屏幕上的朝向"
+ * （readViewPlaneOrientation / 左下角 HUD）才用完整四元数。
+ */
+export function readViewPresetQuaternion(runtime) {
+  const quaternion = runtime?.viewGroup?.quaternion;
+  if (!quaternion) {
+    return null;
+  }
+  const base = runtime?.baseFrameQuaternion;
+  if (!base) {
+    return quaternion.clone();
+  }
+  return quaternion.clone().multiply(base.clone().invert());
+}
+
+/**
+ * 换掉 viewGroup 的"基座四元数"（零件摆正 R），同时保持当前的视图预设不变：
+ *   preset = 当前 viewGroup × 旧基座⁻¹，然后把 viewGroup 置为 preset × 新基座。
+ * nextBase 传 null 表示清除摆正（回到世界坐标系）。
+ * @returns {boolean} 是否成功写入
+ */
+export function rebaseViewGroupBaseFrame(runtime, nextBase) {
+  const viewGroup = runtime?.viewGroup;
+  if (!viewGroup?.quaternion) {
+    return false;
+  }
+  const preset = readViewPresetQuaternion(runtime);
+  if (!preset) {
+    return false;
+  }
+  runtime.baseFrameQuaternion = nextBase && nextBase.clone ? nextBase.clone() : null;
+  const next = runtime.baseFrameQuaternion
+    ? preset.multiply(runtime.baseFrameQuaternion)
+    : preset;
+  viewGroup.quaternion.copy(next).normalize();
+  return true;
 }
 
 export function cameraMatchesViewPreset(runtime, preset, {
@@ -467,9 +515,13 @@ export function cameraMatchesViewPreset(runtime, preset, {
   }
   // The view is the model rotation: a preset matches when the model's
   // preset.direction axis points at the (pinned) camera and preset.up stays
-  // aligned with the camera up.
-  const nextDirection = new runtime.THREE.Vector3(...preset.direction).applyQuaternion(runtime.viewGroup.quaternion);
-  const nextUp = new runtime.THREE.Vector3(...preset.up).applyQuaternion(runtime.viewGroup.quaternion);
+  // aligned with the camera up. 摆正基座不属于预设，比较时要去掉。
+  const modelRotation = readViewPresetQuaternion(runtime);
+  if (!modelRotation) {
+    return false;
+  }
+  const nextDirection = new runtime.THREE.Vector3(...preset.direction).applyQuaternion(modelRotation);
+  const nextUp = new runtime.THREE.Vector3(...preset.up).applyQuaternion(modelRotation);
   const currentDirection = runtime.camera.position.clone().sub(runtime.controls.target);
   const currentUp = runtime.camera.up.clone();
   if (

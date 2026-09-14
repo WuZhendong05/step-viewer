@@ -235,6 +235,7 @@ import {
   writeCadParam,
 } from "@/workbench/sidebar";
 import { buildFeatureTree, resolveFeatureFaceIds, resolveSegmentShapeRefs } from "@/workbench/featureRecognition";
+import { resolveAlignmentFrame, resolveAlignmentSource } from "@/workbench/alignmentFrame";
 import {
   applyUrdfPoseToMeshData,
   buildDefaultUrdfJointValues,
@@ -4657,6 +4658,58 @@ export default function CadWorkspace({
     () => resolveSegmentShapeRefs(resolvedRecognitionFeatures, featureRecognitionPayload, selectedSelectorRuntime),
     [resolvedRecognitionFeatures, featureRecognitionPayload, selectedSelectorRuntime]
   );
+  // ---------- 零件摆正（方件 primeDirection / assistantDirection）----------
+  // 只有方类零件带这两个字段；圆类没有 → 不可用、按钮禁用。
+  // 多实体时取体积最大的那一段（用户决策 3）。
+  const alignmentSource = useMemo(
+    () => resolveAlignmentSource(featureRecognitionPayload),
+    [featureRecognitionPayload]
+  );
+  const alignmentFrame = useMemo(() => {
+    if (!alignmentSource) {
+      return null;
+    }
+    const resolved = resolveAlignmentFrame(
+      alignmentSource.primeDirection,
+      alignmentSource.assistantDirection
+    );
+    return resolved.ok ? resolved : null;
+  }, [alignmentSource]);
+  const alignmentAvailable = Boolean(alignmentFrame);
+  // 开关状态只存在当前会话（用户决策 3），方件默认开（用户决策 1）。
+  const [alignmentEnabled, setAlignmentEnabled] = useState(true);
+  const handleToggleAlignment = useCallback((next) => {
+    setAlignmentEnabled(Boolean(next));
+  }, []);
+  useEffect(() => {
+    // 查看器可能还没就绪（模型/payload 先到），此时 API 会返回 false；下一帧重试。
+    let cancelled = false;
+    let attempts = 0;
+    const run = () => {
+      if (cancelled) {
+        return;
+      }
+      const viewer = viewerRef.current;
+      if (!viewer) {
+        return;
+      }
+      attempts += 1;
+      const applied = alignmentAvailable && alignmentEnabled
+        // 只传基座四元数与主加工面法向：锚点/地板由查看器按当前包围盒自己算。
+        ? viewer.applyAlignmentFrame?.({
+          quaternion: alignmentFrame.quaternion,
+          zAxis: alignmentFrame.zAxis
+        })
+        : viewer.clearAlignmentFrame?.();
+      if (applied === false && attempts < 120) {
+        requestAnimationFrame(run);
+      }
+    };
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [alignmentAvailable, alignmentEnabled, alignmentFrame]);
   // 双击特征叶子：高亮相关面 + 相机转到特征法向并聚焦 + 自动切"透视"显示模式
   // （盲槽等内部特征在实体模式下被面遮挡，透视 + 2.5px 描边才能看清）。
   // 无条件切换、不恢复原模式（2026-09-07 定稿）。
@@ -7989,7 +8042,7 @@ export default function CadWorkspace({
           referenceSelectionUnavailable={referenceSelectionUnavailable}
           referenceSelectionDeferred={selectedTopologyDeferredByCost}
           viewPlaneOffsetRight={viewportFrameInsets.right + 80}
-          viewPlaneOffsetLeft={fileSheetOpen ? activeSheetWidth + 66 : 66}
+          viewPlaneOffsetLeft={fileSheetOpen ? activeSheetWidth + 54 : 54}
           viewerMode={viewerMode}
           assemblyPickingActive={viewerInAssemblyMode}
           assemblyParts={viewerAssemblyRenderParts}
@@ -8428,6 +8481,9 @@ export default function CadWorkspace({
                 displayMode={displaySettings.mode}
                 onDisplayModeChange={handleDisplayModeChange}
                 onSelectViewDirection={handleSelectViewDirection}
+                alignmentAvailable={alignmentAvailable}
+                alignmentEnabled={alignmentAvailable && alignmentEnabled}
+                onToggleAlignment={handleToggleAlignment}
                 onExportModelFile={handleExportModelFile}
                 fileAccessBusyKey={fileAccessBusyKey}
               />

@@ -24,6 +24,7 @@ import { CAD_WORKSPACE_TOOLBAR_DESKTOP_WIDTH_CLASS } from "./ToolbarShell";
 import { StepExportDropdown } from "./StepExportDropdown";
 import { DisplayModeDropdown } from "../viewer/DisplayModeDropdown";
 import { ViewDirectionDropdown } from "../viewer/ViewDirectionDropdown";
+import { PartAlignmentIcon } from "../viewer/CadToolbarIcons";
 
 const FLOATING_TOOL_BAR_SURFACE_CLASS =
   "cad-glass-surface border border-sidebar-border text-sidebar-foreground shadow-sm";
@@ -144,6 +145,10 @@ function DesktopFloatingToolBar({
   displayMode,
   onDisplayModeChange,
   onSelectViewDirection,
+  // 零件摆正（方件 primeDirection/assistantDirection → 摆正坐标系；见 workbench/alignmentFrame.js）
+  alignmentAvailable = false,
+  alignmentEnabled = false,
+  onToggleAlignment,
   selectedEntry,
   onExportModelFile,
   fileAccessBusyKey = ""
@@ -352,6 +357,18 @@ function DesktopFloatingToolBar({
                 contentSide="bottom"
                 contentSideOffset={6}
               />
+
+              {/* 摆正 / 复位：把零件按其主加工面法向（primeDirection）摆正，
+                  主加工方向朝 +Z、辅加工方向朝 +X。无方向字段（如圆类）时禁用。 */}
+              <ToolbarButton
+                label={alignmentEnabled ? "复位到世界坐标系" : "摆正零件（主加工方向朝上）"}
+                active={alignmentEnabled}
+                disabled={!alignmentAvailable}
+                aria-pressed={alignmentEnabled}
+                onClick={() => onToggleAlignment?.(!alignmentEnabled)}
+              >
+                <PartAlignmentIcon className="size-4" strokeWidth={2} />
+              </ToolbarButton>
 
               <StepExportDropdown
                 selectedEntry={selectedEntry}

@@ -161,7 +161,7 @@ import {
   THEME_FLOOR_MODES
 } from "cadjs/lib/themeSettings";
 import ViewPlaneControl from "./viewer/ViewPlaneControl";
-import AxesIndicator from "./viewer/AxesIndicator";
+import AxesIndicator, { AlignmentAxesIndicator } from "./viewer/AxesIndicator";
 import { useImplicitRaymarch } from "./viewer/hooks/useImplicitRaymarch";
 import { useViewerDrawingOverlay } from "./viewer/hooks/useViewerDrawingOverlay";
 import { useViewerPicking } from "./viewer/hooks/useViewerPicking";
@@ -183,6 +183,8 @@ import {
   normalizeViewportFrameInsets,
   readViewPlaneOrientation,
   stepKeyboardOrbit,
+  readViewPresetQuaternion,
+  rebaseViewGroupBaseFrame,
   VIEW_PLANE_DEFAULT_PRESET,
   VIEW_PLANE_FACE_BY_ID,
   VIEW_PLANE_FACES,
@@ -193,6 +195,7 @@ import {
   viewRotationForCameraPose,
   WORLD_UP
 } from "./viewer/viewportCameraKit";
+import { alignmentAnchorPoint, rotatedBoundsMinZ } from "@/workbench/alignmentFrame";
 import { normalizeViewerRenderState } from "./viewer/renderState";
 import {
   buildModel,
@@ -1017,7 +1020,9 @@ function easeCameraTransitionProgress(t, easing = CAMERA_TRANSITION_EASING.EASE_
 }
 
 function readViewRotation(runtime) {
-  const quaternion = runtime?.viewGroup?.quaternion;
+  // 快照存"预设部分"（去掉零件摆正基座）：基座是本次会话的临时状态，
+  // 若把它一起存下来，下次恢复后再按"方件默认开"摆正会乘两次 R。
+  const quaternion = readViewPresetQuaternion(runtime);
   if (!quaternion) {
     return undefined;
   }
@@ -1052,6 +1057,10 @@ function applyViewRotation(runtime, viewRotation) {
     return false;
   }
   viewGroup.quaternion.set(x, y, z, w).normalize();
+  // 存进来的是预设部分；若当前开启了零件摆正，基座要重新叠上去。
+  if (runtime.baseFrameQuaternion) {
+    viewGroup.quaternion.multiply(runtime.baseFrameQuaternion.clone()).normalize();
+  }
   return true;
 }
 
@@ -1144,7 +1153,11 @@ function applyPerspectiveSnapshot(runtime, perspective, { scheduleIdle = true } 
   if (viewRotation) {
     applyViewRotation(runtime, viewRotation);
   } else if (runtime.viewGroup) {
+    // 老快照没有 viewRotation：预设取默认（单位四元数），但摆正基座要保留。
     runtime.viewGroup.quaternion.identity();
+    if (runtime.baseFrameQuaternion) {
+      runtime.viewGroup.quaternion.multiply(runtime.baseFrameQuaternion.clone()).normalize();
+    }
   }
   runtime.camera.lookAt(runtime.controls.target);
   runtime.controls.update();
@@ -1541,10 +1554,16 @@ function transitionCameraToViewPreset(runtime, preset) {
 
   // Rotate the MODEL to the preset orientation; the camera stays pinned. The
   // default isometric preset maps to identity (the model's authored orientation).
-  const endViewRotation = viewGroupQuaternionForPreset(runtime, preset);
-  if (!endViewRotation) {
+  // 开了零件摆正时，预设旋转要叠在摆正基座"上面"（preset × base），
+  // 这样 slerp(presetA×base, presetB×base) = slerp(presetA,presetB)×base，
+  // 过渡期间摆正不会被破坏。
+  const presetRotation = viewGroupQuaternionForPreset(runtime, preset);
+  if (!presetRotation) {
     return false;
   }
+  const endViewRotation = runtime.baseFrameQuaternion
+    ? presetRotation.multiply(runtime.baseFrameQuaternion.clone()).normalize()
+    : presetRotation;
   const startViewRotation = runtime.viewGroup.quaternion.clone();
   const currentTarget = runtime.controls.target.clone();
   runtime.cameraTransition = {
@@ -1908,7 +1927,7 @@ const CadViewer = forwardRef(function CadViewer({
   showViewPlane = true,
   viewPlaneOffsetRight = 16,
   viewPlaneOffsetTop = 16,
-  viewPlaneOffsetLeft = 66,
+  viewPlaneOffsetLeft = 54,
   viewPlaneVerticalCenter = false,
   viewPlaneHeader = null,
   compactViewPlane = false,
@@ -2008,6 +2027,14 @@ const CadViewer = forwardRef(function CadViewer({
     offset: null,
     floorZ: null
   });
+  // ---------- 零件摆正（见 workbench/alignmentFrame.js）----------
+  // alignmentFrameRef 保存"当前生效的摆正坐标系"：{ quaternion, zAxis }（quaternion 是
+  // 基座四元数 R，zAxis 是主加工面法向，用于算包围盒顶面中心当锚点）。
+  // indicatorState 是给屏幕空间三角架用的每帧投影结果。会话级状态，不落盘。
+  const alignmentFrameRef = useRef(null);
+  const [alignmentIndicator, setAlignmentIndicator] = useState(null);
+  // 舞台/网格重算 floorZ 需要的最小上下文（构建场景时缓存）。
+  const stageRefreshRef = useRef(null);
   const clipSettingsRef = useRef(normalizeStepClipSettings(null));
   const selectorRuntimeRef = useRef(selectorRuntime);
   const displayEdgeRuntimeRef = useRef(displayEdgeRuntime);
@@ -2455,7 +2482,152 @@ const CadViewer = forwardRef(function CadViewer({
       viewPlaneOrientationEqual(current, nextOrientation) ? current : nextOrientation
     ));
     syncDefaultPerspectiveState(runtime);
+    syncAlignmentIndicator(runtime);
   };
+  // ---------- 零件摆正：屏幕空间三角架 + 地板重算 ----------
+  // 锚点在屏幕上的位置每帧都可能变（模型在转/在缩放），所以跟着
+  // syncViewPlaneOrientation 一起更新；朝向取"预设部分"，即零件自身的 XYZ。
+  const syncAlignmentIndicator = (runtime = runtimeRef.current) => {
+    const frame = alignmentFrameRef.current;
+    const host = interactionHostRef.current;
+    const anchor = frame?.anchor;
+    if (!anchor || !runtime?.THREE || !runtime?.camera || !host) {
+      setAlignmentIndicator((current) => (current === null ? current : null));
+      return;
+    }
+    const rect = host.getBoundingClientRect();
+    if (!rect.width || !rect.height) {
+      setAlignmentIndicator((current) => (current === null ? current : null));
+      return;
+    }
+    const point = new runtime.THREE.Vector3(anchor[0], anchor[1], anchor[2]);
+    runtime.modelGroup?.updateWorldMatrix?.(true, false);
+    runtime.modelGroup?.localToWorld?.(point);
+    point.project(runtime.camera);
+    const left = (point.x * 0.5 + 0.5) * rect.width;
+    const top = (-point.y * 0.5 + 0.5) * rect.height;
+    const onScreen = Number.isFinite(left) && Number.isFinite(top)
+      && point.z >= -1 && point.z <= 1
+      && left > -32 && top > -32 && left < rect.width + 32 && top < rect.height + 32;
+    const orientation = onScreen
+      ? readViewPlaneOrientation(runtime, { quaternion: readViewPresetQuaternion(runtime) })
+      : null;
+    if (!orientation) {
+      setAlignmentIndicator((current) => (current === null ? current : null));
+      return;
+    }
+    setAlignmentIndicator((current) => (
+      current
+        && Math.abs(current.left - left) < 0.5
+        && Math.abs(current.top - top) < 0.5
+        && viewPlaneOrientationEqual(current.orientation, orientation)
+        ? current
+        : { left, top, orientation }
+    ));
+  };
+  // 摆正后零件最低点变了，网格/舞台要跟着落到新的最低面上。
+  const refreshStageFloor = (runtime, floorZ) => {
+    const context = stageRefreshRef.current;
+    if (!context || !runtime?.THREE || !Number.isFinite(Number(floorZ))) {
+      return;
+    }
+    updateActiveGridHelper(
+      runtime,
+      context.viewerTheme,
+      context.radius,
+      floorZ,
+      context.sceneScaleMode,
+      context.floorMode
+    );
+    updateStageEffects(
+      runtime,
+      context.viewerTheme,
+      context.themeSettings,
+      context.radius,
+      runtime.gridFloorZ ?? 0,
+      context.floorMode,
+      context.sceneScaleMode
+    );
+  };
+  // 记住未摆正时的地板高度，复位时还原。
+  const alignmentFloorRestoreRef = useRef(null);
+  // 按"当前生效的摆正坐标系"重算锚点与地板。场景重建（换模型/换显示设置）后
+  // 包围盒与 modelOffset 都变了，必须重跑一次；此时顺便刷新"未摆正地板高度"基线。
+  const applyStoredAlignment = useCallback((runtime, { refreshFloorBaseline = false } = {}) => {
+    const frame = alignmentFrameRef.current;
+    if (!frame?.zAxis || !runtime?.THREE) {
+      return false;
+    }
+    const bounds = runtime.modelBounds;
+    frame.anchor = bounds ? alignmentAnchorPoint(bounds, frame.zAxis) : null;
+    const offset = modelTransformRef.current.offset;
+    if (!bounds || !offset) {
+      return false;
+    }
+    if (refreshFloorBaseline || !alignmentFloorRestoreRef.current) {
+      alignmentFloorRestoreRef.current = {
+        floorZ: modelTransformRef.current.floorZ,
+        floorZBelowModel: modelTransformRef.current.floorZBelowModel
+      };
+    }
+    const lowest = rotatedBoundsMinZ(bounds, [offset.x, offset.y, offset.z], frame.quaternion);
+    if (Number.isFinite(lowest)) {
+      // 写回缓存：主题切换等路径也读同一份高度，地板不会被弹回原位。
+      modelTransformRef.current.floorZ = lowest;
+      modelTransformRef.current.floorZBelowModel = lowest;
+      refreshStageFloor(runtime, lowest);
+    }
+    return true;
+  }, []);
+  const applyAlignmentFrame = useCallback((frame) => {
+    const runtime = runtimeRef.current;
+    if (!runtime?.THREE || !runtime?.viewGroup) {
+      return false;
+    }
+    const quaternion = Array.isArray(frame?.quaternion) && frame.quaternion.length === 4
+      ? frame.quaternion.map(Number)
+      : null;
+    if (!quaternion || !quaternion.every(Number.isFinite)) {
+      return false;
+    }
+    const zAxis = Array.isArray(frame?.zAxis) && frame.zAxis.length === 3 ? frame.zAxis : null;
+    const base = new runtime.THREE.Quaternion(quaternion[0], quaternion[1], quaternion[2], quaternion[3]).normalize();
+    // 换基座：保持当前视图预设不变（preset 不动，只换 base）。
+    if (!rebaseViewGroupBaseFrame(runtime, base)) {
+      return false;
+    }
+    alignmentFrameRef.current = { quaternion, zAxis, anchor: null };
+    applyStoredAlignment(runtime);
+    runtime.requestRender?.();
+    syncViewPlaneOrientation(runtime);
+    return true;
+  }, []);
+  const clearAlignmentFrame = useCallback(() => {
+    const runtime = runtimeRef.current;
+    if (!runtime?.viewGroup) {
+      // 查看器还没就绪：返回 false 让调用方下一帧重试。
+      return false;
+    }
+    if (!alignmentFrameRef.current) {
+      // 幂等：本来就没摆正。
+      return true;
+    }
+    alignmentFrameRef.current = null;
+    setAlignmentIndicator((current) => (current === null ? current : null));
+    if (!rebaseViewGroupBaseFrame(runtime, null)) {
+      return false;
+    }
+    const restore = alignmentFloorRestoreRef.current;
+    if (restore) {
+      modelTransformRef.current.floorZ = restore.floorZ;
+      modelTransformRef.current.floorZBelowModel = restore.floorZBelowModel;
+      alignmentFloorRestoreRef.current = null;
+      refreshStageFloor(runtime, restore.floorZ);
+    }
+    runtime.requestRender?.();
+    syncViewPlaneOrientation(runtime);
+    return true;
+  }, []);
   const applyInitialPerspective = useCallback((runtime = runtimeRef.current) => {
     const nextPerspective = resolvePerspectiveSnapshot(
       perspectiveRef ? perspectiveRef.current : undefined,
@@ -3598,6 +3770,15 @@ const CadViewer = forwardRef(function CadViewer({
     activateDefaultViewPlane() {
       return activateDefaultViewPlane();
     },
+    // ---------- 零件摆正（方件的 primeDirection/assistantDirection）----------
+    // frame = { quaternion: [x,y,z,w], zAxis: [x,y,z] }，来自 workbench/alignmentFrame.js。
+    // 只改 viewGroup 的基座四元数 + 重算地板；视图预设、拾取、边线与快照都自动一致。
+    applyAlignmentFrame(frame) {
+      return applyAlignmentFrame(frame);
+    },
+    clearAlignmentFrame() {
+      return clearAlignmentFrame();
+    },
     getPerspective() {
       return readScopedPerspectiveSnapshot(runtimeRef.current, {
         modelKey,
@@ -4450,6 +4631,18 @@ const CadViewer = forwardRef(function CadViewer({
     );
     updateSpotLightTarget(runtime);
     updateStageEffects(runtime, viewerTheme, normalizedThemeSettings, radius, runtime.gridFloorZ ?? 0, resolvedFloorMode, normalizedSceneScaleMode);
+    // 「零件摆正」需要按新姿态重算 floorZ 并重刷网格/舞台，这里缓存同一组参数。
+    stageRefreshRef.current = {
+      viewerTheme,
+      themeSettings: normalizedThemeSettings,
+      radius,
+      floorMode: resolvedFloorMode,
+      sceneScaleMode: normalizedSceneScaleMode
+    };
+    // 场景重建后包围盒/modelOffset 都变了：若当前处于摆正状态，锚点与地板要重算。
+    if (alignmentFrameRef.current) {
+      applyStoredAlignment(runtime, { refreshFloorBaseline: true });
+    }
 
     modelGroup.position.copy(modelOffset);
     edgesGroup.position.copy(modelOffset);
@@ -5640,7 +5833,15 @@ const CadViewer = forwardRef(function CadViewer({
         hasContent={Boolean(viewportContent)}
         viewPlaneOrientation={viewPlaneOrientation}
         viewPlaneOffsetLeft={viewPlaneOffsetLeft}
-        viewPlaneOffsetBottom={66}
+        // 指示器锚在容器左下角，容器边长 96 → 120 会让可见中心各移 12px，
+        // 所以偏移量从 66 收到 54，把三角架留在原来的位置。
+        viewPlaneOffsetBottom={54}
+        compact={compactViewPlane}
+      />
+      {/* 第二个坐标系：贴在零件包围盒顶面中心，方向 = 摆正坐标系；
+          左下角那个保持世界坐标系不动（用户决策 1）。 */}
+      <AlignmentAxesIndicator
+        indicator={alignmentIndicator}
         compact={compactViewPlane}
       />
       {error ? (
