@@ -1,6 +1,6 @@
 // Browser tab title. The selected file is appended as "<title> | <filename>";
 // index.html carries the same string so the tab reads correctly before hydration.
-export const DOCUMENT_TITLE = "text-to-cad";
+export const DOCUMENT_TITLE = "step-viewer";
 
 export const ASSET_STATUS = {
   PENDING: "pending",

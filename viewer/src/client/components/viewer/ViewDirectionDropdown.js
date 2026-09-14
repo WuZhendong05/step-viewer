@@ -1,4 +1,4 @@
-import { Box } from "lucide-react";
+import { ViewDirectionCubeIcon } from "./CadToolbarIcons";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -44,7 +44,7 @@ export function ViewDirectionDropdown({
             event.stopPropagation();
           }}
         >
-          <Box className={iconClassName} strokeWidth={2} aria-hidden="true" />
+          <ViewDirectionCubeIcon className={iconClassName} strokeWidth={2} />
           <span className="sr-only">切换视图</span>
         </button>
       </DropdownMenuTrigger>

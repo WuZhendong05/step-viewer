@@ -7959,7 +7959,7 @@ export default function CadWorkspace({
     left: fileSheetOpen ? Math.max(activeSidebarWidth, activeSheetWidth) : activeSidebarWidth
   };
   const floatingCadToolbarPosition = {
-    bottom: "10%",
+    bottom: "5%",
     left: "50%",
     transform: "translateX(-50%)"
   };
