@@ -199,17 +199,13 @@ function DesktopFloatingToolBar({
     </ToolbarButton>
   ) : null;
 
-  const screenshotButton = (
-    <ToolbarButton
-      label="复制截图"
-      onClick={() => {
-        void handleScreenshotCopy();
-      }}
-      disabled={captureDisabled}
-    >
-      <Focus className="size-4" strokeWidth={2} aria-hidden="true" />
-    </ToolbarButton>
-  );
+  // 「复制截图」已按需求隐藏（用户 2026-09-15）。原实现：
+  //   <ToolbarButton label="复制截图" onClick={() => void handleScreenshotCopy()}
+  //     disabled={captureDisabled}><Focus className="size-4" strokeWidth={2} /></ToolbarButton>
+  // 留成 null 而不是删掉引用点：它在普通模式与轨道模式各被引用一次，渲染 null 自然消失，
+  // 恢复时把这一行换回原 JSX 即可。相关的 handleScreenshotCopy / captureDisabled /
+  // Focus 导入都原样保留（未删，方便随时恢复）。
+  const screenshotButton = null;
 
   // A drawing's own toolbar, in its own pill to the LEFT of the shared one: 2D and 3D are a
   // property of the drawing being viewed, not a tool that acts on it, so grouping them with
@@ -384,6 +380,7 @@ function DesktopFloatingToolBar({
                 <BoundingBoxIcon className="size-4" strokeWidth={2} />
               </ToolbarButton>
 
+              {/* 「导出模型」已按需求隐藏（用户 2026-09-15）。原实现：
               <StepExportDropdown
                 selectedEntry={selectedEntry}
                 onExportModelFile={onExportModelFile}
@@ -394,6 +391,7 @@ function DesktopFloatingToolBar({
                 contentSide="bottom"
                 contentSideOffset={6}
               />
+              */}
             </>
           )}
         </div>
