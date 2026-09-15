@@ -120,7 +120,11 @@
   --ui-glass-surface-tint: color-mix(in srgb, var(--cad-scene-backdrop) 60%, var(--sidebar));
   --ui-glass-popover-tint: color-mix(in srgb, var(--cad-scene-backdrop) 45%, var(--popover));
   --ui-glass-control-tint: color-mix(in srgb, var(--cad-scene-backdrop) 55%, var(--background));
-  --ui-glass-surface: color-mix(in srgb, var(--ui-glass-surface-tint) 42%, transparent);
+  /* 顶栏 / 侧栏 / 视口内浮动工具栏：**不透明纯白**（用户 2026-09-15 决策，方案 A）。
+   * 原为 mix(tint 42%, transparent)，叠在白背板上合成后 ≈ #F9FAFC；现在直接写死。
+   * 代价：不再跟随 --cad-scene-backdrop（显示设置里的背景色），也不再随主题自动派生
+   * —— 所以 .dark 里必须配一个深色值（漏了会白底浅字）。 */
+  --ui-glass-surface: #ffffff;
   --ui-glass-popover: color-mix(in srgb, var(--ui-glass-popover-tint) 56%, transparent);
   --ui-glass-control: color-mix(in srgb, var(--ui-glass-control-tint) 34%, transparent);
   --ui-warning-bg: oklch(0.962 0.059 95.617);
@@ -182,8 +186,10 @@
   --ui-success-bg: oklch(0.262 0.051 172.552);
   --ui-success-text: oklch(0.871 0.15 154.449);
 
-  /* Glass tints inherit the scene-backdrop mix from :root; the swapped Nord
-   * tokens above carry the dark flavor. */
+  /* popover / control 的 glass tint 仍继承 :root 的 scene-backdrop mix，上面换过的
+   * Nord token 负责深色风味。但 surface 已在 :root 写成固定 #ffffff、不会自动派生 ——
+   * 必须在这里显式配套，否则深色下顶栏/侧栏会白底浅字（不可读）。 */
+  --ui-glass-surface: #21262e;
   --ui-loading-overlay: rgb(26 30 35 / 40%);
   --ui-loading-overlay-strong: rgb(26 30 35 / 78%);
 }
@@ -221,6 +227,11 @@
 
   .cad-glass-surface {
     background-color: var(--ui-glass-surface) !important;
+    /* surface 现在是不透明色，背后没有可透出的内容 —— 关掉这两个大面积（顶栏 1440×44、
+     * 侧栏 365×856）的 backdrop-filter，省掉无意义的模糊运算。视觉零差异。
+     * popover / control 仍是半透明，共用规则里的 blur 保留。 */
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
   }
 
   .cad-glass-popover {
