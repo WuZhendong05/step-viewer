@@ -67,13 +67,16 @@ const fmtDirection = (value) => {
 };
 
 // ---------- enums ----------
+// 方向标签：用"上/下/左/右/前/后"的短名（原先带"表面"后缀，在侧栏里太长且重复 ——
+// 树里每一行都是特征面，后缀没有信息量）。none 保留"无方向"：去掉"方向"只剩一个
+// 孤字「无」，反而更难懂。
 const DIRECTION_LABELS = Object.freeze({
-  top: "上表面",
-  front: "前表面",
-  back: "后表面",
-  bottom: "下表面",
-  left: "左表面",
-  right: "右表面",
+  top: "上",
+  front: "前",
+  back: "后",
+  bottom: "下",
+  left: "左",
+  right: "右",
   none: "无方向"
 });
 

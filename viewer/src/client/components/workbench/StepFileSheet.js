@@ -624,9 +624,20 @@ export default function StepFileSheet({
               </span>
               <span className="shrink-0 text-[15px] font-medium">{feature.typeLabel}</span>
               {feature.directionLabel || feature.faceCount ? (
-                <span className="ml-auto flex shrink-0 items-center gap-2 text-[14px] text-muted-foreground">
-                  {feature.directionLabel ? <span>{feature.directionLabel}</span> : null}
-                  {feature.faceCount ? <span className="tabular-nums">{feature.faceCount} 面</span> : null}
+                <span className="ml-auto flex shrink-0 items-center gap-2 text-[14px]">
+                  {/* 方向与面数：与左端编号同款灰底 chip（bg-accent + 4px 圆角 + 6×2 内边距）
+                      —— 三者视觉同族、只做分组不带语义。编号用等宽字，这两项用常规字，
+                      保持"标识 vs 属性"的区分。 */}
+                  {feature.directionLabel ? (
+                    <span className="shrink-0 rounded-[4px] bg-accent px-1.5 py-0.5 leading-none text-muted-foreground">
+                      {feature.directionLabel}
+                    </span>
+                  ) : null}
+                  {feature.faceCount ? (
+                    <span className="shrink-0 rounded-[4px] bg-accent px-1.5 py-0.5 leading-none tabular-nums text-muted-foreground">
+                      {feature.faceCount} 面
+                    </span>
+                  ) : null}
                 </span>
               ) : null}
             </span>
@@ -798,7 +809,9 @@ export default function StepFileSheet({
           )}
           <span className="min-w-0 flex-1 truncate font-semibold">{node.label}</span>
           {node.sub ? (
-            <span className="shrink-0 rounded-sm bg-accent px-1 py-0.5 text-[14px] font-medium text-accent-foreground">
+            // 分支 badge（根节点的零件类型「方件」/「DFM 信息」的「N 条」）与编号、方向、面数同款 chip。
+            // 注意 rounded-sm 在本项目等于 0px（--radius: 0），要圆角必须写 arbitrary 值。
+            <span className="shrink-0 rounded-[4px] bg-accent px-1.5 py-0.5 text-[14px] font-medium text-accent-foreground">
               {node.sub}
             </span>
           ) : null}

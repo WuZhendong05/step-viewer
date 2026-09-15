@@ -207,7 +207,8 @@ test("整体信息叶子带 metric；特征叶子带 feature", () => {
   assert.ok(hole, "没找到 feat:H-001");
   assert.ok(hole.feature, "特征叶子缺 feature");
   assert.equal(hole.feature.typeLabel, "沉头孔");
-  assert.equal(hole.feature.directionLabel, "上表面");
+  // 方向用短名（2026-09-15 起去掉"表面"后缀，侧栏里 364px 宽、且树里每行都是特征面）
+  assert.equal(hole.feature.directionLabel, "上");
   assert.equal(hole.feature.faceCount, 3);
   assert.equal(hole.metric, undefined, "特征叶子不该有 metric");
   assert.deepEqual(hole.feature.blocks.map((block) => block.value), ["11/6.6", "8/12", "贯穿"]);
