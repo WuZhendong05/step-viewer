@@ -3,13 +3,16 @@
 // "整体信息" section differs between 方类 / 圆类. Structure:
 //   零件 (Part)
 //   ├─ 整体信息 — 几何信息 / 加工面信息 / 轮廓信息（按类别取字段）
-//   └─ 特征分支 — 孔/槽/凸台/回转/特殊/倒角/圆角/曲面/斜面/PMI/DFM
+//   └─ 特征分支 — 孔/槽/凸台/回转/特殊/倒角/圆角/曲面/斜面/制造信息(PMI)/DFM
 //        每个类型一个分支，组内实例带方向标注，编号前缀 H/G/B/R/S/X/F/Q/V/P。
 // 多实体零件：外层 { multiEntity: true, parts: [特征JSON...] }（按实体体积降序），
 //   每段生成一棵"实体 N · 类型"树；单段/无 parts 的旧格式走单树逻辑。
 // Nodes that can highlight carry { highlight: { entityIds } }; the caller maps
 // entityIds (STEP ADVANCED_FACE numbers) to component face ids via the GLB
 // topology's stepEntityId column.
+
+// 注意：扩展名不能省 —— 本模块会被 node:test 直接 import（Vite 能省，Node ESM 不能）。
+import { describeFeature, splitValueUnit } from "./featureFields.js";
 
 // ---------- shared helpers ----------
 function uniqueNumbers(values) {
@@ -128,6 +131,15 @@ function branchNode(id, label, children, dot, sub) {
   return node;
 }
 
+// 整体信息的 key-value 叶子：把"值 + 单位"拆开，渲染层据此让数字右对齐成一列、单位弱化。
+// ⚠️ 只有整体信息是这种形态 —— DFM 叶子是"警示条目"、特征叶子是参数块，都不走这里。
+function metricLeaf(id, label, text) {
+  const node = leafNode(id, label, text);
+  const { value, unit } = splitValueUnit(text);
+  node.metric = { value, unit };
+  return node;
+}
+
 const TYPE_DOTS = Object.freeze({
   hole: "var(--hole)",
   groove: "var(--groove)",
@@ -210,21 +222,22 @@ const filletDesc = (item, subKey) => {
 const curvedSurfaceDesc = (item) => `曲面 面积${fmtDim(item.superficialArea)} 体积${fmtDim(item.volume)} 深${fmtDim(item.depth)}`;
 const bevelDesc = (item) => `斜面 倾角${fmtDim(item.angle)} 深${fmtDim(item.depth)}`;
 const PMI_SUB_LABELS = Object.freeze({ linearTolerance: "线性公差", geometricTolerance: "几何公差", roughness: "粗糙度" });
-const pmiDesc = (item, subKey) => `PMI ${PMI_SUB_LABELS[subKey] || subKey || ""}`;
+// 分支名已表明是"制造信息"，所以叶子描述不再重复前缀（原先渲染成「PMI 线性公差」）
+const pmiDesc = (item, subKey) => PMI_SUB_LABELS[subKey] || subKey || "";
 
 // ---------- feature-type registry (order = display order) ----------
 // group  -> key on part; subs  -> sub-features under group.
 // nested : group[key] is a dict of arrays (throughRounded etc.)
 // object : group itself is a dict of arrays (fillet.open/close, pmi.*)
 // array  : group itself is an array (chamfer, curvedSurface, bevel)
-const FEATURE_TYPES = Object.freeze([
-  { id: "hole", label: "孔 (hole)", prefix: "H", dot: TYPE_DOTS.hole, group: "hole", subs: [
+export const FEATURE_TYPES = Object.freeze([
+  { id: "hole", label: "孔", prefix: "H", dot: TYPE_DOTS.hole, group: "hole", subs: [
     { key: "threadedHole", sub: holeDesc.threadedHole },
     { key: "throughAndBlindHoles", sub: holeDesc.throughAndBlindHoles },
     { key: "counterbore", sub: holeDesc.counterbore },
     { key: "precisionHole", sub: holeDesc.precisionHole }
   ] },
-  { id: "groove", label: "槽 (groove)", prefix: "G", dot: TYPE_DOTS.groove, group: "groove", subs: [
+  { id: "groove", label: "槽", prefix: "G", dot: TYPE_DOTS.groove, group: "groove", subs: [
     { key: "rectangularGroove", nested: true, sub: grooveDesc.rectangularGroove },
     { key: "irregularGroove", sub: grooveDesc.irregularGroove },
     { key: "sawGroove", sub: grooveDesc.sawGroove },
@@ -233,11 +246,11 @@ const FEATURE_TYPES = Object.freeze([
     { key: "keyway", sub: grooveDesc.keyway },
     { key: "unRegularRB", sub: grooveDesc.unRegularRB }
   ] },
-  { id: "boss", label: "凸台 (boss)", prefix: "B", dot: TYPE_DOTS.boss, group: "boss", subs: [
+  { id: "boss", label: "凸台", prefix: "B", dot: TYPE_DOTS.boss, group: "boss", subs: [
     { key: "step", sub: bossDesc.step },
     { key: "convex", sub: bossDesc.convex }
   ] },
-  { id: "roundBoss", label: "回转 (roundBoss)", prefix: "R", dot: TYPE_DOTS.boss, group: "roundBoss", subs: [
+  { id: "roundBoss", label: "回转", prefix: "R", dot: TYPE_DOTS.boss, group: "roundBoss", subs: [
     { key: "outerCircle", sub: roundBossDesc.outerCircle },
     { key: "innerCircle", sub: roundBossDesc.innerCircle },
     { key: "centreDrilling", sub: roundBossDesc.centreDrilling },
@@ -245,24 +258,24 @@ const FEATURE_TYPES = Object.freeze([
     { key: "circlip", sub: roundBossDesc.circlip },
     { key: "circularGroove", sub: roundBossDesc.circularGroove }
   ] },
-  { id: "specialFeature", label: "特殊加工 (specialFeature)", prefix: "S", dot: TYPE_DOTS.groove, group: "specialFeature", subs: [
+  { id: "specialFeature", label: "特殊加工", prefix: "S", dot: TYPE_DOTS.groove, group: "specialFeature", subs: [
     { key: "carve", sub: specialDesc.carve },
     { key: "normalSP", sub: specialDesc.normalSP },
     { key: "solidThread", sub: specialDesc.solidThread }
   ] },
-  { id: "chamfer", label: "倒角 (chamfer)", prefix: "X", dot: TYPE_DOTS.groove, group: "chamfer", array: true, subs: [
+  { id: "chamfer", label: "倒角", prefix: "X", dot: TYPE_DOTS.groove, group: "chamfer", array: true, subs: [
     { key: "chamfer", sub: chamferDesc }
   ] },
-  { id: "fillet", label: "圆角 (fillet)", prefix: "F", dot: TYPE_DOTS.groove, group: "fillet", object: true, subs: [
+  { id: "fillet", label: "圆角", prefix: "F", dot: TYPE_DOTS.groove, group: "fillet", object: true, subs: [
     { key: "fillet", sub: filletDesc }
   ] },
-  { id: "curvedSurface", label: "曲面 (curvedSurface)", prefix: "Q", dot: TYPE_DOTS.groove, group: "curvedSurface", array: true, subs: [
+  { id: "curvedSurface", label: "曲面", prefix: "Q", dot: TYPE_DOTS.groove, group: "curvedSurface", array: true, subs: [
     { key: "curvedSurface", sub: curvedSurfaceDesc }
   ] },
-  { id: "bevel", label: "斜面 (bevel)", prefix: "V", dot: TYPE_DOTS.groove, group: "bevel", array: true, subs: [
+  { id: "bevel", label: "斜面", prefix: "V", dot: TYPE_DOTS.groove, group: "bevel", array: true, subs: [
     { key: "bevel", sub: bevelDesc }
   ] },
-  { id: "pmi", label: "PMI", prefix: "P", dot: TYPE_DOTS.info, group: "pmi", object: true, subs: [
+  { id: "pmi", label: "制造信息", prefix: "P", dot: TYPE_DOTS.info, group: "pmi", object: true, subs: [
     { key: "pmi", sub: pmiDesc }
   ] }
 ]);
@@ -291,17 +304,26 @@ function resolveSubFeature(part, type, subFeature) {
 }
 
 // Collect labelled instances for one feature type (e.g. 孔), numbered continuously.
+// 除了拍平后的 label，这里还保留结构化描述（typeLabel / blocks / directionLabel）：
+// 渲染层优先用它渲染，拿不到才回退到 label 字符串（旧行为）。见 workbench/featureFields.js。
 function collectTypeInstances(part, type) {
   const out = [];
   for (const subFeature of type.subs) {
     for (const { item, subKey } of resolveSubFeature(part, type, subFeature)) {
+      const described = describeFeature({ featureKey: subFeature.key, subKey, item });
       for (const instance of collectInstances(item)) {
         let label = subFeature.sub(item, subKey);
-        const dir = instance.direction;
-        if (dir && DIRECTION_LABELS[dir]) {
-          label += ` (${DIRECTION_LABELS[dir]})`;
+        const directionLabel = DIRECTION_LABELS[instance.direction] || "";
+        if (directionLabel) {
+          label += ` (${directionLabel})`;
         }
-        out.push({ label, entityIds: instance.entityIds });
+        out.push({
+          label,
+          entityIds: instance.entityIds,
+          typeLabel: described ? described.typeLabel : "",
+          blocks: described ? described.blocks : null,
+          directionLabel
+        });
       }
     }
   }
@@ -349,10 +371,19 @@ function dfmEntityIds(entries) {
   );
 }
 
+// DFM 条目统一按"警示"呈现（用户决策：无严重度分级，单档）。
+// 数据层只打标记（node.dfm = true），图标与颜色全部交给渲染层 —— 见 StepFileSheet.js 的
+// node.dfm 叶子分支（浅粉圆角底框 + ⚠ 警示三角 + 深红文字），数据层不关心主题与视觉。
+function markDfm(node) {
+  node.dfm = true;
+  return node;
+}
+
 function buildDfmBranches(part) {
   const dfm = part.DFM || {};
   const groupBranches = [];
   const knownCodes = new Set(DFM_GROUPS.flatMap((group) => group.keys));
+  let total = 0;
   for (const group of DFM_GROUPS) {
     const leaves = [];
     for (const code of group.keys) {
@@ -360,36 +391,43 @@ function buildDfmBranches(part) {
       if (!Array.isArray(entries) || !entries.length) {
         continue;
       }
-      leaves.push(leafNode(
+      leaves.push(markDfm(leafNode(
         `dfm:${code}`,
         DFM_CODES[code] || String(code),
         "",
         dfmEntityIds(entries),
         TYPE_DOTS.dfm,
         [String(code), `共 ${entries.length} 组实体ID`]
-      ));
+      )));
+      total += 1;
     }
     if (leaves.length) {
-      groupBranches.push(branchNode(group.id, group.label, leaves, TYPE_DOTS.dfm));
+      groupBranches.push(markDfm(branchNode(group.id, group.label, leaves, TYPE_DOTS.dfm)));
     }
   }
   const others = Object.keys(dfm)
     .filter((code) => !knownCodes.has(Number(code)) && Array.isArray(dfm[code]) && dfm[code].length)
-    .map((code) => leafNode(
-      `dfm:${code}`,
-      `DFM ${code}`,
-      "",
-      dfmEntityIds(dfm[code]),
-      TYPE_DOTS.dfm,
-      [String(code), `共 ${dfm[code].length} 组实体ID`]
-    ));
+    .map((code) => {
+      total += 1;
+      return markDfm(leafNode(
+        `dfm:${code}`,
+        `DFM ${code}`,
+        "",
+        dfmEntityIds(dfm[code]),
+        TYPE_DOTS.dfm,
+        [String(code), `共 ${dfm[code].length} 组实体ID`]
+      ));
+    });
   if (others.length) {
-    groupBranches.push(branchNode("dfm:other", "其他", others, TYPE_DOTS.dfm));
+    groupBranches.push(markDfm(branchNode("dfm:other", "其他", others, TYPE_DOTS.dfm)));
   }
   if (!groupBranches.length) {
     return null;
   }
-  return branchNode("dfm", "DFM 信息", groupBranches, TYPE_DOTS.dfm);
+  // 计数放在组头上：工程师第一眼要看的是"这个件有几条 DFM 提示"
+  const root = markDfm(branchNode("dfm", "DFM 信息", groupBranches, TYPE_DOTS.dfm));
+  root.sub = `${total} 条`;
+  return root;
 }
 
 // ---------- 整体信息 ----------
@@ -401,7 +439,7 @@ function buildOverview(part, isRound) {
       ["最大长度", "lengthMax", "mm", fmtNum],
       ["表面积", "surfaceArea", "mm²", fmtNum],
       ["体积", "volume", "mm³", fmtNum]
-    ].map(([label, key, unit, fmt]) => leafNode(`info:${key}`, label, `${fmt(geo[key])}${unit ? ` ${unit}` : ""}`));
+    ].map(([label, key, unit, fmt]) => metricLeaf(`info:${key}`, label, `${fmt(geo[key])}${unit ? ` ${unit}` : ""}`));
     return branchNode("info", "整体信息", [branchNode("info:geometry", "几何信息", geoLeaves)], TYPE_DOTS.info);
   }
 
@@ -411,9 +449,9 @@ function buildOverview(part, isRound) {
   // 主加工方向 = 主加工面法向、辅加工方向 = 摆正后的 +X（见 workbench/alignmentFrame.js）。
   // 只有方类带这两个字段；缺字段时对应叶子直接不渲染。
   const geometryLeaves = [
-    leafNode("info:sa", "表面积", `${fmtNum(partInfo.surfaceArea)} mm²`),
-    leafNode("info:vol", "体积", `${fmtNum(partInfo.volume)} mm³`),
-    leafNode("info:ba", "底面面积", `${fmtNum(partInfo.basalArea)} mm²`)
+    metricLeaf("info:sa", "表面积", `${fmtNum(partInfo.surfaceArea)} mm²`),
+    metricLeaf("info:vol", "体积", `${fmtNum(partInfo.volume)} mm³`),
+    metricLeaf("info:ba", "底面面积", `${fmtNum(partInfo.basalArea)} mm²`)
   ];
   for (const [label, key, id] of [
     ["主加工方向", "primeDirection", "info:prime"],
@@ -421,15 +459,15 @@ function buildOverview(part, isRound) {
   ]) {
     const rendered = fmtDirection(partInfo[key]);
     if (rendered) {
-      geometryLeaves.push(leafNode(id, label, rendered));
+      geometryLeaves.push(metricLeaf(id, label, rendered));
     }
   }
   const infoChildren = [
     branchNode("info:geometry", "几何信息", geometryLeaves),
     branchNode("info:surface", "加工面信息", [
-      leafNode("info:nms", "加工面数量", String(machined.numberOfMachiningSurface ?? "")),
-      leafNode("info:nb", "斜面数量", String(machined.numberOfBevels ?? "")),
-      leafNode("info:ns", "侧面数量", String(machined.numberOfSides ?? ""))
+      metricLeaf("info:nms", "加工面数量", String(machined.numberOfMachiningSurface ?? "")),
+      metricLeaf("info:nb", "斜面数量", String(machined.numberOfBevels ?? "")),
+      metricLeaf("info:ns", "侧面数量", String(machined.numberOfSides ?? ""))
     ])
   ];
 
@@ -445,12 +483,12 @@ function buildOverview(part, isRound) {
       ["切削体积", "cuttingVolume", "mm³", fmtNum],
       ["底面面积", "basalArea", "mm²", fmtNum],
       ["间隙比", "gapRatio", "", (v) => (Number.isFinite(Number(v)) ? String(Number(v)) : String(v ?? ""))]
-    ].map(([label, key, unit, fmt]) => leafNode(`info:contour:${key}`, label, `${fmt(contourData[key])}${unit ? ` ${unit}` : ""}`));
+    ].map(([label, key, unit, fmt]) => metricLeaf(`info:contour:${key}`, label, `${fmt(contourData[key])}${unit ? ` ${unit}` : ""}`));
     infoChildren.push(branchNode("info:contour", "轮廓信息", contourLeaves));
   }
   const contourGroove = Array.isArray(contour.contourGroove) ? contour.contourGroove : [];
   if (contourGroove.length) {
-    infoChildren.push(branchNode("info:contourGroove", "轮廓缺口槽 (contourGroove)", contourGroove.map((item, index) => leafNode(
+    infoChildren.push(branchNode("info:contourGroove", "轮廓缺口槽", contourGroove.map((item, index) => leafNode(
       `info:contourGroove:${index}`,
       `缺口槽 长${fmtDim(item.length)}×宽${fmtDim(item.width)}×深${fmtDim(item.depth)}`,
       item.radius != null ? `四角R${fmtDim(item.radius)}` : ""
@@ -475,7 +513,19 @@ function buildFeatureBranches(part) {
     }
     const leaves = instances.map((instance) => {
       const code = `${prefix}-${String(counters[prefix]++).padStart(3, "0")}`;
-      return leafNode(`feat:${code}`, code, instance.label, instance.entityIds, type.dot);
+      const node = leafNode(`feat:${code}`, code, instance.label, instance.entityIds, type.dot);
+      if (instance.blocks) {
+        // 结构化描述：渲染层据此出"编号｜类型｜参数块｜方向｜面数"。
+        node.feature = {
+          typeLabel: instance.typeLabel,
+          blocks: instance.blocks,
+          directionLabel: instance.directionLabel,
+          faceCount: Array.isArray(instance.entityIds) ? instance.entityIds.length : 0,
+          // 兜底文本：block 渲染不出内容时用它，保证任何类型都不会显示为空
+          fallback: instance.label
+        };
+      }
+      return node;
     });
     branches.push(branchNode(`feat:${type.id}`, type.label, leaves, type.dot));
   }

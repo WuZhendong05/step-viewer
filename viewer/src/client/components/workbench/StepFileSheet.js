@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Box, Boxes, ChevronRight, Eye, EyeOff, Link2, X } from "lucide-react";
+import { Box, Boxes, ChevronRight, Eye, EyeOff, Link2, TriangleAlert, X } from "lucide-react";
 import { cn } from "@/ui/utils";
 import {
   STEP_MODEL_ROOT_ID,
@@ -570,24 +570,163 @@ export default function StepFileSheet({
     if (node.leaf) {
       const actionable = Array.isArray(node.faceIds) && node.faceIds.length > 0;
       const selected = node.id === selectedFeatureId;
+      // 结构化叶子：feature 由 workbench/featureFields.js 生成（编号｜类型｜参数块｜方向｜面数）。
+      // 没有它（DFM / 整体信息 / 本模块未覆盖的类型）时走下面的旧布局。
+      const feature = node.feature
+        && node.feature.typeLabel
+        && Array.isArray(node.feature.blocks)
+        && node.feature.blocks.length
+        ? node.feature
+        : null;
+      const handleClick = actionable ? () => {
+        setSelectedFeatureId(node.id);
+        if (typeof onSelectFeatureFaces === "function") {
+          onSelectFeatureFaces(node.faceIds);
+        }
+      } : undefined;
+      const handleDoubleClick = actionable && typeof onFocusFeatureFaces === "function" ? () => {
+        setSelectedFeatureId(node.id);
+        onFocusFeatureFaces(node.faceIds);
+      } : undefined;
+      if (feature) {
+        // 侧栏实测只有 364px 宽（叶子还有 depth 缩进），"编号｜类型｜参数｜方向｜面数"五段挤一行
+        // 会把「贯穿」挤到第二行、且参差不齐。所以固定拆成两行（所有特征叶子等高、更规整）：
+        //   主行 = 编号 + 类型 +（右对齐）方向 + 面数
+        //   参数行 = 各参数块，缩进对齐到类型名下方
+        // 参数块**不用 chip 底色**：底色 + 块间距会把一行的宽度预算吃掉约 50px，用等宽数字
+        // 与弱化标签分层即可（见 2026-09-15 方案 A / C 的实测取舍）。
+        // 长度单位 mm 一律省略（CAD 语境默认毫米，原始 label 本来也不带单位），
+        // 只在 mm² / mm³ / ° 这类会歧义时才显示。
+        return (
+          <button
+            key={node.id}
+            type="button"
+            title={feature.fallback || undefined}
+            onClick={handleClick}
+            onDoubleClick={handleDoubleClick}
+            disabled={!actionable}
+            className={cn(
+              "flex w-full min-w-0 flex-col gap-0.5 rounded-md py-1 pr-2 text-left text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground disabled:cursor-default disabled:opacity-80",
+              selected && "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
+            )}
+            style={{ paddingLeft: padLeft }}
+          >
+            <span className="flex w-full min-w-0 items-center gap-2">
+              {node.dot ? (
+                <span className="shrink-0" style={{ width: 8, height: 8, borderRadius: 999, background: node.dot, flex: "none" }} />
+              ) : (
+                <span className="w-2 shrink-0" />
+              )}
+              {/* 特征编号：灰底圆角小框，仅包围编号文本，与后面的参数做视觉分组。
+                  用 bg-accent token（与分支计数徽章同族），深浅主题自动跟随。 */}
+              <span className="shrink-0 rounded-[4px] bg-accent px-1.5 py-0.5 font-mono text-[14px] leading-none tabular-nums text-muted-foreground">
+                {node.label}
+              </span>
+              <span className="shrink-0 text-[15px] font-medium">{feature.typeLabel}</span>
+              {feature.directionLabel || feature.faceCount ? (
+                <span className="ml-auto flex shrink-0 items-center gap-2 text-[14px] text-muted-foreground">
+                  {feature.directionLabel ? <span>{feature.directionLabel}</span> : null}
+                  {feature.faceCount ? <span className="tabular-nums">{feature.faceCount} 面</span> : null}
+                </span>
+              ) : null}
+            </span>
+            <span
+              className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5 text-[14px]"
+              // 74 = dot 8 + 间距 8 + 编号框 50.5（38.5 文本 + 左右 6px 内边距）+ 间距 8，
+              // 让参数与主行的类型名对齐（编号加底框后 +12px，实测校准）
+              style={{ paddingLeft: 74 }}
+            >
+              {feature.blocks.map((field) => (
+                <span key={field.id} className="shrink-0 whitespace-nowrap">
+                  {field.label ? <span className="text-muted-foreground">{field.label}</span> : null}
+                  <span className="font-mono tabular-nums">{field.value}</span>
+                  {field.unit && field.unit !== "mm" ? (
+                    <span className="ml-0.5 text-[13px] text-muted-foreground">{field.unit}</span>
+                  ) : null}
+                </span>
+              ))}
+            </span>
+          </button>
+        );
+      }
+      if (node.dfm) {
+        // DFM 警示条目：浅粉圆角底框（从图标处开始、收缩包住内容）+ 前置警示三角 +
+        // 深红文字（参考系统警示横幅样式，用户 2026-09-15 确认：无严重度分级，单档）。
+        // 底框在**内层 span** 上而不是整行 button —— 缩进区不上色；行 hover 时底色加深一档。
+        // 颜色硬编码（浅 #FFECE8/#BE5557，深 #3A2426/#F2A9A5），不走 --ui-warning-*（琥珀）——
+        // 警示粉是全树唯一彩底，两套语义不混用。
+        return (
+          <button
+            key={node.id}
+            type="button"
+            title={actionable ? `${node.label}（${node.faceIds.length} 个面）` : node.label}
+            onClick={handleClick}
+            onDoubleClick={handleDoubleClick}
+            disabled={!actionable}
+            className={cn(
+              "group flex w-full min-w-0 items-center rounded-md py-1 pr-2 text-left text-[15px] disabled:cursor-default",
+              selected && "font-medium"
+            )}
+            style={{ paddingLeft: padLeft }}
+          >
+            <span
+              className={cn(
+                // ⚠ 本项目设计系统 --radius: 0（全零圆角），rounded-md 会解析成 0px ——
+                // 必须用 arbitrary 值显式写 6px（编号框的 rounded-[4px] 同理）
+                "inline-flex max-w-full items-center gap-1.5 rounded-[6px] px-2 py-1",
+                "bg-[#FFECE8] text-[#BE5557]",
+                "group-hover:bg-[#FFD9D2]",
+                "dark:bg-[#3A2426] dark:text-[#F2A9A5] dark:group-hover:bg-[#452D2F]"
+              )}
+            >
+              <TriangleAlert className="size-4 shrink-0" strokeWidth={2} aria-hidden="true" />
+              <span className="min-w-0 truncate font-medium">{node.label}</span>
+              {Array.isArray(node.badges) && node.badges[0] ? (
+                <span className="shrink-0 font-mono text-[14px] tabular-nums">{node.badges[0]}</span>
+              ) : null}
+              {Array.isArray(node.badges) && node.badges[1] ? (
+                <span className="shrink-0 text-[13px] opacity-70">{node.badges[1]}</span>
+              ) : null}
+            </span>
+          </button>
+        );
+      }
+      if (node.metric) {
+        // 整体信息：key 左对齐、值右对齐（等宽数字）+ 固定宽度的单位列。
+        // 单位列固定宽度是这里的关键 —— 它让每一行的数字右边界落在同一条竖线上，
+        // 所以 12 970.00 / 39 338.29 / 2 303.37 可以直接比大小，而不是各自贴着右边缘。
+        return (
+          <button
+            key={node.id}
+            type="button"
+            title={node.sub || undefined}
+            disabled
+            className="flex w-full min-w-0 items-center gap-2 rounded-md py-1 pr-2 text-left text-[15px] text-sidebar-foreground disabled:cursor-default"
+            style={{ paddingLeft: padLeft }}
+          >
+            {node.dot ? (
+              <span className="shrink-0" style={{ width: 8, height: 8, borderRadius: 999, background: node.dot, flex: "none" }} />
+            ) : (
+              <span className="w-2 shrink-0" />
+            )}
+            <span className="min-w-0 flex-1 truncate">{node.label}</span>
+            <span className="ml-auto flex shrink-0 items-baseline gap-1.5">
+              <span className="font-mono text-[14px] tabular-nums">{node.metric.value}</span>
+              <span className="w-7 text-left text-[13px] text-muted-foreground">{node.metric.unit}</span>
+            </span>
+          </button>
+        );
+      }
       return (
         <button
           key={node.id}
           type="button"
           title={actionable ? `${node.label}（${node.faceIds.length} 个面）` : node.sub || undefined}
-          onClick={actionable ? () => {
-            setSelectedFeatureId(node.id);
-            if (typeof onSelectFeatureFaces === "function") {
-              onSelectFeatureFaces(node.faceIds);
-            }
-          } : undefined}
-          onDoubleClick={actionable && typeof onFocusFeatureFaces === "function" ? () => {
-            setSelectedFeatureId(node.id);
-            onFocusFeatureFaces(node.faceIds);
-          } : undefined}
+          onClick={handleClick}
+          onDoubleClick={handleDoubleClick}
           disabled={!actionable}
           className={cn(
-            "flex w-full min-w-0 items-center gap-2 rounded-md py-1 pr-2 text-left text-[17px] text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground disabled:cursor-default disabled:opacity-80",
+            "flex w-full min-w-0 items-center gap-2 rounded-md py-1 pr-2 text-left text-[15px] text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground disabled:cursor-default disabled:opacity-80",
             selected && "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
           )}
           style={{ paddingLeft: padLeft }}
@@ -602,7 +741,7 @@ export default function StepFileSheet({
             <span className="ml-auto flex min-w-0 shrink-0 items-center gap-1.5">
               {node.badges.map((badge, badgeIndex) => (
                 <span key={badgeIndex} className={cn(
-                  "shrink-0 rounded-sm px-1 py-0.5 text-[13px]",
+                  "shrink-0 rounded-sm px-1 py-0.5 text-[15px]",
                   badgeIndex === 0 ? "bg-accent font-medium text-accent-foreground" : "bg-muted text-muted-foreground"
                 )}>{badge}</span>
               ))}
@@ -612,11 +751,11 @@ export default function StepFileSheet({
               {node.sub ? (
                 <span className={cn(
                   "truncate font-mono text-muted-foreground",
-                  actionable ? "max-w-[13rem] rounded-sm bg-muted px-1 py-0.5 text-[13px]" : "shrink-0 text-[13.5px]"
+                  actionable ? "max-w-[13rem] rounded-sm bg-muted px-1 py-0.5 text-[15px]" : "shrink-0 text-[15.5px]"
                 )}>{node.sub}</span>
               ) : null}
               {actionable ? (
-                <span className="shrink-0 rounded-sm bg-muted px-1 py-0.5 text-[13px] text-muted-foreground">
+                <span className="shrink-0 rounded-sm bg-muted px-1 py-0.5 text-[15px] text-muted-foreground">
                   {node.faceIds.length} 面
                 </span>
               ) : null}
@@ -644,12 +783,12 @@ export default function StepFileSheet({
           title={segmentShapeTitle}
           aria-expanded={open}
           className={cn(
-            "flex w-full min-w-0 items-center gap-1.5 rounded-md py-1 pr-2 text-left text-[15px] font-medium text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+            "flex w-full min-w-0 items-center gap-1.5 rounded-md py-1 pr-2 text-left text-[16px] font-medium text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
             segmentActive && "bg-sidebar-accent text-sidebar-accent-foreground"
           )}
           style={{ paddingLeft: padLeft }}
         >
-          <span className="inline-block w-3 shrink-0 text-[13px] leading-none">
+          <span className="inline-block w-3 shrink-0 text-[14px] leading-none">
             {open ? "▾" : "▸"}
           </span>
           {node.dot ? (
@@ -659,7 +798,9 @@ export default function StepFileSheet({
           )}
           <span className="min-w-0 flex-1 truncate font-semibold">{node.label}</span>
           {node.sub ? (
-            <span className="shrink-0 rounded-sm bg-accent px-1 py-0.5 text-[13px] font-medium text-accent-foreground">{node.sub}</span>
+            <span className="shrink-0 rounded-sm bg-accent px-1 py-0.5 text-[14px] font-medium text-accent-foreground">
+              {node.sub}
+            </span>
           ) : null}
         </button>
         {open ? (
