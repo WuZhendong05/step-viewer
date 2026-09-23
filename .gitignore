@@ -13,11 +13,13 @@ tools/local.env.cmd
 # ---- 构建产物 ----
 node_modules/
 dist/
+build/
 
 # ---- Python ----
 __pycache__/
 *.pyc
 .venv/
+*.egg-info/
 
 # ---- 杂项 ----
 *.log
