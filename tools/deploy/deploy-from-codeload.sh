@@ -13,7 +13,8 @@
 #
 #   设计要点（踩过的坑，别改）：
 #     * Python 必须 3.11：cadgen 要求 >=3.11，OCP 7.9.3.1 的 wheel 是 cp310..cp314，
-#       Ubuntu 20.04 自带 3.8 → 装不了。走 deadsnakes PPA。
+#       Ubuntu 20.04 自带 3.8 → 装不了。22.04/24.04 走 deadsnakes；
+#       ⚠️ 20.04(focal) 的 deadsnakes 索引已空（过标准支持期）→ 源码编译到 /opt/python3.11。
 #     * OCP 用 cadquery-ocp-novtk（无 VTK，天然 headless），不要装 pythonocc-core：
 #       两者都带 OCCT 原生库，同环境必冲突。
 #     * OCPSVG / ocp_gordon 必须钉版本（新版 API 不兼容）。
@@ -30,6 +31,9 @@ APP_DIR="${APP_DIR:-/opt/step-viewer}"
 VENV_DIR="${VENV_DIR:-/opt/venvs/cadgen}"
 NODE_VERSION="${NODE_VERSION:-22.22.2}"
 NODE_PREFIX="${NODE_PREFIX:-/usr/local/lib/nodejs}"
+# Ubuntu 20.04 没有 python3.11 的 deb 源（deadsnakes 已下架 focal）→ 源码编译到这里
+PY_PREFIX="${PY_PREFIX:-/opt/python3.11}"
+PY_SRC_VER="${PY_SRC_VER:-3.11.9}"
 PYPI_INDEX="${PYPI_INDEX:-https://mirrors.aliyun.com/pypi/simple/}"
 NPM_REGISTRY="${NPM_REGISTRY:-https://registry.npmmirror.com}"
 VIEWER_PORT="${VIEWER_PORT:-3245}"
@@ -131,19 +135,58 @@ else
 fi
 
 # ---------------------------------------------------------------- 3. Python ---
+# 两条路：
+#   ① apt/deadsnakes —— 只对还在支持期的发行版有效（22.04 / 24.04）。
+#   ② 源码编译 —— Ubuntu 20.04(focal) 已过标准支持期，deadsnakes 的 focal 索引
+#      现在是空的（Packages.gz 20 字节 = 0 个包），add-apt-repository 会"成功"
+#      但 apt 找不到 python3.11。所以 20.04 必须走源码编译。
+ensure_python311() {
+  if command -v python3.11 >/dev/null 2>&1; then ok "已存在 $(python3.11 -V 2>&1)"; return 0; fi
+
+  if [ -x "$PY_PREFIX/bin/python3.11" ]; then
+    ln -sf "$PY_PREFIX/bin/python3.11" /usr/local/bin/python3.11
+    ok "复用已编译的 $PY_PREFIX/bin/python3.11"
+    return 0
+  fi
+
+  . /etc/os-release
+  if [ "${VERSION_ID:-}" != "20.04" ]; then
+    add-apt-repository -y ppa:deadsnakes/ppa >>/tmp/sv-apt.log 2>&1 || true
+    apt-get update -y >>/tmp/sv-apt.log 2>&1 || true
+    if apt-cache policy python3.11 2>/dev/null | grep -q 'Candidate: [0-9]'; then
+      apt_install python3.11 python3.11-venv python3.11-dev && { ok "$(python3.11 -V 2>&1)"; return 0; }
+    fi
+    warn "apt 源里没有 python3.11，转源码编译"
+  else
+    warn "Ubuntu 20.04：deadsnakes 已下架 focal，直接源码编译 Python $PY_SRC_VER"
+  fi
+
+  apt_install build-essential libssl-dev zlib1g-dev libbz2-dev libreadline-dev \
+    libsqlite3-dev libffi-dev liblzma-dev libncursesw5-dev uuid-dev libgdbm-dev \
+    libgdbm-compat-dev pkg-config
+  src="/tmp/Python-$PY_SRC_VER"
+  if [ ! -d "$src" ]; then
+    echo "  下载 Python $PY_SRC_VER 源码（约 26MB）…"
+    curl -fL --retry 3 --connect-timeout 20 -o /tmp/py-src.tgz \
+      "https://www.python.org/ftp/python/$PY_SRC_VER/Python-$PY_SRC_VER.tgz" \
+      || die "Python 源码下载失败：python.org 不可达（可换 $PY_SRC_VER 对应的内网镜像后手工编译到 $PY_PREFIX）"
+    tar -xzf /tmp/py-src.tgz -C /tmp
+  fi
+  echo "  编译中（-j$CPU_N，约 2~4 分钟）…"
+  (
+    cd "$src"
+    ./configure --prefix="$PY_PREFIX" --with-ensurepip=install >/tmp/py-conf.log 2>&1
+    make -j"$CPU_N" >/tmp/py-make.log 2>&1
+    make install >/tmp/py-install.log 2>&1
+  ) || { tail -25 /tmp/py-make.log >&2; die "Python 编译失败（/tmp/py-{conf,make,install}.log）"; }
+  ln -sf "$PY_PREFIX/bin/python3.11" /usr/local/bin/python3.11
+  # 不覆盖 /usr/local/bin/python3：系统脚本用的是 /usr/bin/python3(3.8)，动它容易连带踩坏 apt 钩子
+  ok "$(python3.11 -V 2>&1)（源码编译 -> $PY_PREFIX）"
+}
+
 if [ "$SKIP_DEPS" -eq 0 ]; then
   step 3/8 "Python 3.11"
-  if ! command -v python3.11 >/dev/null 2>&1; then
-    . /etc/os-release
-    if [ "${VERSION_ID:-}" != "20.04" ] && [ "${VERSION_ID:-}" != "22.04" ] && [ "${VERSION_ID:-}" != "24.04" ]; then
-      warn "未预期的发行版 ${PRETTY_NAME:-?}，仍尝试 deadsnakes"
-    fi
-    add-apt-repository -y ppa:deadsnakes/ppa >>/tmp/sv-apt.log 2>&1 \
-      || die "加 deadsnakes PPA 失败：检查 ppa.launchpadcontent.net 可达性（或手工装 3.11 后重跑 --skip-deps）"
-    apt-get update -y >>/tmp/sv-apt.log 2>&1 || warn "apt-get update 有仓库报错，继续"
-    apt_install python3.11 python3.11-venv python3.11-dev
-  fi
-  ok "$(python3.11 -V 2>&1)"
+  ensure_python311
 
   step 4/8 "Node.js $NODE_VERSION（前端构建 + cadgen 的 JS 几何构建器都要）"
   need_node=1
