@@ -30,7 +30,29 @@ _CAD_BACKEND_PROBE = (
     "import build123d\n"
     "import cadgen.step_artifact\n"
 )
-_CAD_BACKEND_PROBE_TIMEOUT_SECONDS = 30
+
+
+def _probe_timeout_seconds() -> int:
+    """Budget for the import probe, override with $VIEWER_CAD_PROBE_TIMEOUT.
+
+    Right after a logon the FIRST import of OCP/build123d/cadgen can take far
+    longer than a warm run — cold disk, AV scanning, startup contention. 30s was
+    tight enough that two reboots in a row failed this probe on a perfectly
+    healthy interpreter (08:33 boot: startup took 38s end to end). A broken
+    interpreter still fails fast (an ImportError returns immediately); only a
+    genuine hang burns this budget.
+    """
+    raw = str(os.environ.get("VIEWER_CAD_PROBE_TIMEOUT") or "").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return 90
+    return value if value > 0 else 90
+
+
+_CAD_BACKEND_PROBE_TIMEOUT_SECONDS = _probe_timeout_seconds()
+# One retry, because a cold-start timeout is exactly the flake this guards against.
+_CAD_BACKEND_PROBE_ATTEMPTS = 2
 
 
 def _find_up_dir(rel: str, start: str) -> str:
@@ -78,29 +100,32 @@ def probe_cadgen_runtime(repo_root: str) -> dict:
     pythonpath = cadgen_pythonpath(repo_root)
     if pythonpath:
         env["PYTHONPATH"] = pythonpath
-    try:
-        proc = subprocess.run(
-            [sys.executable, "-c", _CAD_BACKEND_PROBE],
-            cwd=repo_root if repo_root and os.path.isdir(repo_root) else None,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=_CAD_BACKEND_PROBE_TIMEOUT_SECONDS,
-        )
-    except subprocess.TimeoutExpired:
-        return {
-            "ok": False,
-            "python": sys.executable,
-            "error": f"CAD backend validation timed out after {_CAD_BACKEND_PROBE_TIMEOUT_SECONDS}s.",
-        }
-    except OSError as exc:
-        return {"ok": False, "python": sys.executable, "error": str(exc)}
-    if proc.returncode == 0:
-        return {"ok": True, "python": sys.executable, "error": ""}
-    detail = (proc.stderr or proc.stdout or f"probe exited with code {proc.returncode}").strip()
-    if len(detail) > 4000:
-        detail = detail[-4000:]
-    return {"ok": False, "python": sys.executable, "error": detail}
+    for attempt in range(_CAD_BACKEND_PROBE_ATTEMPTS):
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-c", _CAD_BACKEND_PROBE],
+                cwd=repo_root if repo_root and os.path.isdir(repo_root) else None,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=_CAD_BACKEND_PROBE_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
+            continue  # cold-start flake: retry once before declaring the backend dead
+        except OSError as exc:
+            return {"ok": False, "python": sys.executable, "error": str(exc)}
+        if proc.returncode == 0:
+            return {"ok": True, "python": sys.executable, "error": ""}
+        detail = (proc.stderr or proc.stdout or f"probe exited with code {proc.returncode}").strip()
+        if len(detail) > 4000:
+            detail = detail[-4000:]
+        return {"ok": False, "python": sys.executable, "error": detail}
+    return {
+        "ok": False,
+        "python": sys.executable,
+        "error": (f"CAD backend validation timed out after {_CAD_BACKEND_PROBE_TIMEOUT_SECONDS}s "
+                  f"x{_CAD_BACKEND_PROBE_ATTEMPTS} attempts."),
+    }
 
 
 def require_cadgen_runtime(repo_root: str) -> dict:
