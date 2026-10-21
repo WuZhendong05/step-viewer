@@ -97,14 +97,25 @@ ${C_STEP}step-viewer 部署参数${C_RESET}
 EOF
 
 # ------------------------------------------------------------------- 1. 系统 ---
+# focal（20.04）的镜像源偶发 "Release file expired" / 某个 pocket 404，会让 set -e
+# 在第一步就整段中断。update 一律视为尽力而为，install 失败才重试一次并报真错。
+apt_install() {
+  if apt-get install -y --no-install-recommends "$@" >>/tmp/sv-apt.log 2>&1; then return 0; fi
+  warn "apt install 失败一次，刷新索引后重试：$*"
+  apt-get update -y >>/tmp/sv-apt.log 2>&1 || true
+  if apt-get install -y --no-install-recommends "$@" >>/tmp/sv-apt.log 2>&1; then return 0; fi
+  tail -25 /tmp/sv-apt.log >&2
+  die "apt 安装失败：$*（完整日志 /tmp/sv-apt.log）"
+}
+
 if [ "$SKIP_DEPS" -eq 0 ]; then
   step 1/8 "系统依赖（apt）"
-  apt-get update -y
-  apt-get install -y --no-install-recommends \
+  apt-get update -y >/tmp/sv-apt.log 2>&1 || warn "apt-get update 有仓库报错（老镜像常见），继续"
+  apt_install \
     curl ca-certificates xz-utils tar rsync openssl \
     software-properties-common gnupg \
     libgl1 libglu1-mesa libxrender1 libxext6 libxkbcommon0 \
-    libgomp1 libgfortran5 >/dev/null
+    libgomp1 libgfortran5
   ok "apt 依赖就绪"
 
   # 2GB 机器：不加 swap，OCP 峰值必然触发 OOM killer
@@ -124,16 +135,13 @@ if [ "$SKIP_DEPS" -eq 0 ]; then
   step 3/8 "Python 3.11"
   if ! command -v python3.11 >/dev/null 2>&1; then
     . /etc/os-release
-    if [ "${VERSION_ID:-}" = "20.04" ] || [ "${VERSION_ID:-}" = "22.04" ] || [ "${VERSION_ID:-}" = "24.04" ]; then
-      add-apt-repository -y ppa:deadsnakes/ppa
-      apt-get update -y
-    else
+    if [ "${VERSION_ID:-}" != "20.04" ] && [ "${VERSION_ID:-}" != "22.04" ] && [ "${VERSION_ID:-}" != "24.04" ]; then
       warn "未预期的发行版 ${PRETTY_NAME:-?}，仍尝试 deadsnakes"
-      add-apt-repository -y ppa:deadsnakes/ppa || true
-      apt-get update -y || true
     fi
-    apt-get install -y python3.11 python3.11-venv python3.11-dev \
-      || die "python3.11 安装失败：检查外网是否可达 ppa.launchpadcontent.net（或手工装 3.11 后重跑 --skip-deps）"
+    add-apt-repository -y ppa:deadsnakes/ppa >>/tmp/sv-apt.log 2>&1 \
+      || die "加 deadsnakes PPA 失败：检查 ppa.launchpadcontent.net 可达性（或手工装 3.11 后重跑 --skip-deps）"
+    apt-get update -y >>/tmp/sv-apt.log 2>&1 || warn "apt-get update 有仓库报错，继续"
+    apt_install python3.11 python3.11-venv python3.11-dev
   fi
   ok "$(python3.11 -V 2>&1)"
 
@@ -271,6 +279,15 @@ ${C_OK}部署完成${C_RESET}
   服务管理  : systemctl restart step-viewer step-upload-api
               （⚠️ api 单元 Requires=viewer，重启 viewer 会连带停 api，两个一起 restart）
 EOF
+
+# 大机器给一条明确的调参提示（4 是项目在本机验证过的甜点，8C/16G 可再往上试）
+if [ "$CPU_N" -ge 8 ] && [ "$MEM_KB" -ge 8000000 ] && [ "$CAD_WORKERS" -lt 6 ]; then
+  cat <<EOF
+
+  本机 ${CPU_N} 核 / $((MEM_KB/1024)) MB，若并发上传较多可提高车道数（单 worker 约 0.5~0.6 GB）：
+    sudo env CAD_WORKERS=6 PREWARM_WORKERS=6 bash $APP_DIR/tools/deploy/deploy-from-codeload.sh --skip-deps
+EOF
+fi
 
 # ---------------------------------------------------------------- 自检(可选) ---
 if [ "$DO_SELFTEST" -eq 1 ]; then
