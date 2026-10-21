@@ -530,7 +530,8 @@ export default function StepFileSheet({
   statusItems = [],
   themeTabs = [],
   openSectionIds = [],
-  onOpenSectionIdsChange
+  onOpenSectionIdsChange,
+  externalSelectionToken = 0
 }) {
   const rowRefs = useRef(new Map());
   const lastActiveTreeNodeScrollKeyRef = useRef("");
@@ -543,6 +544,15 @@ export default function StepFileSheet({
     setFeatureCollapsed(new Set());
     setSelectedFeatureId("");
   }, [recognitionFeatures]);
+  // 外部面高亮（iframe 宿主 postMessage）生效时清掉树里的选中行：高亮状态与特征树
+  // 共用同一个 selectedReferenceIds，不在这里清就会出现"树里高亮着孔 1、3D 里是
+  // 另一组面"的错位。token 变化即清（外部连续高亮时 token 递增，所以每次都生效）。
+  useEffect(() => {
+    if (!externalSelectionToken) {
+      return;
+    }
+    setSelectedFeatureId("");
+  }, [externalSelectionToken]);
   const toggleFeatureCollapsed = useMemo(() => (key) => {
     setFeatureCollapsed((prev) => {
       const next = new Set(prev);

@@ -234,7 +234,12 @@ import {
   shouldDeferFileParamSelection,
   writeCadParam,
 } from "@/workbench/sidebar";
-import { buildFeatureTree, resolveFeatureFaceIds, resolveSegmentShapeRefs } from "@/workbench/featureRecognition";
+import { buildFeatureTree, buildFaceIdByEntityId, resolveFeatureFaceIds, resolveSegmentShapeRefs } from "@/workbench/featureRecognition";
+import {
+  buildHighlightResultMessage,
+  buildReadyMessage,
+  parseExternalHighlightMessage
+} from "@/workbench/externalHighlight";
 import { resolveAlignmentFrame, resolveAlignmentSource } from "@/workbench/alignmentFrame";
 import {
   applyUrdfPoseToMeshData,
@@ -4658,6 +4663,109 @@ export default function CadWorkspace({
     () => resolveSegmentShapeRefs(resolvedRecognitionFeatures, featureRecognitionPayload, selectedSelectorRuntime),
     [resolvedRecognitionFeatures, featureRecognitionPayload, selectedSelectorRuntime]
   );
+  // ---------- 外部面高亮（iframe 宿主经 postMessage，协议见 workbench/externalHighlight.js）----------
+  // 2026-10-16 定稿：origin 全量开放、无反向通道、无 focus；entityIds 与特征 JSON 的
+  // relatedEntityIds 同义（STEP 实体号 #N）。互斥是"免费"的——外部高亮与特征树写的是
+  // 同一个 selectedReferenceIds，谁后写谁生效；这里唯一要额外做的是把特征树自己的
+  // 选中行清掉（externalSelectionToken），否则会出现"树里高亮着孔 1、3D 里是另一组面"的错位。
+  const [externalSelectionToken, setExternalSelectionToken] = useState(0);
+  const externalPendingRef = useRef(null);
+  const externalFrameRef = useRef(null);
+  const externalReadySentRef = useRef(false);
+
+  const postToHost = useCallback((message) => {
+    // 全量开放：targetOrigin 用 "*"。未来若要收敛，这里换成宿主 origin 白名单成员。
+    if (window.parent && window.parent !== window) {
+      window.parent.postMessage(message, "*");
+    }
+  }, []);
+
+  // 实体号 -> 面引用 id -> selectedReferenceIds。查不到的编号一律进 unknown 回执，
+  // 绝不静默吞掉——"给了 10 个只亮 7 个"没有回执就无从排查。
+  const applyExternalHighlight = useCallback((request) => {
+    const faceIdByEntityId = buildFaceIdByEntityId(selectedSelectorRuntime);
+    const referenceIds = [];
+    const unknown = [];
+    for (const entityId of request.entityIds) {
+      const referenceId = faceIdByEntityId.get(entityId);
+      if (referenceId) {
+        referenceIds.push(referenceId);
+      } else {
+        unknown.push(entityId);
+      }
+    }
+    setExternalSelectionToken((token) => token + 1);
+    setSelectedReferenceIds(referenceIds);
+    postToHost(buildHighlightResultMessage({
+      requestId: request.requestId,
+      ok: true,
+      matched: referenceIds.length,
+      total: request.entityIds.length,
+      unknown
+    }));
+  }, [selectedSelectorRuntime, postToHost]);
+
+  const flushPendingExternalHighlight = useCallback(() => {
+    const request = externalPendingRef.current;
+    if (!request) {
+      return;
+    }
+    externalPendingRef.current = null;
+    applyExternalHighlight(request);
+  }, [applyExternalHighlight]);
+
+  // 就绪握手：必须等拓扑与实体号映射可用，而不是 iframe onload（那早得多）。
+  // 宿主在收到 ready 前会把点击入队；这里广播完顺手把"早到"的请求补应用。
+  useEffect(() => {
+    if (!selectedSelectorRuntime) {
+      return;
+    }
+    if (!externalReadySentRef.current) {
+      externalReadySentRef.current = true;
+      postToHost(buildReadyMessage({
+        taskId: readActiveTask() || "",
+        file: readCadParam() || selectedEntry?.urlPath || ""
+      }));
+    }
+    flushPendingExternalHighlight();
+  }, [selectedSelectorRuntime, postToHost, flushPendingExternalHighlight, selectedEntry]);
+
+  // 消息入口：只认父窗口、且带我们协议标记的帧。未就绪时只缓存最后一条（宿主排队
+  // 之外的兜底）；就绪后同一渲染帧内只应用最后一条，宿主连点不会堆积重复重建。
+  useEffect(() => {
+    if (window.parent === window) {
+      return undefined;   // 独立打开：没有宿主，不监听
+    }
+    const onMessage = (event) => {
+      if (event.source !== window.parent) {
+        return;
+      }
+      const parsed = parseExternalHighlightMessage(event.data);
+      if (!parsed.ok) {
+        return;
+      }
+      externalPendingRef.current = parsed;
+      if (!selectedSelectorRuntime || externalFrameRef.current !== null) {
+        return;
+      }
+      externalFrameRef.current = window.requestAnimationFrame(() => {
+        externalFrameRef.current = null;
+        const latest = externalPendingRef.current;
+        externalPendingRef.current = null;
+        if (latest) {
+          applyExternalHighlight(latest);
+        }
+      });
+    };
+    window.addEventListener("message", onMessage);
+    return () => {
+      window.removeEventListener("message", onMessage);
+      if (externalFrameRef.current !== null) {
+        window.cancelAnimationFrame(externalFrameRef.current);
+        externalFrameRef.current = null;
+      }
+    };
+  }, [selectedSelectorRuntime, applyExternalHighlight]);
   // ---------- 零件摆正（方件 primeDirection / assistantDirection）----------
   // 只有方类零件带这两个字段；圆类没有 → 不可用、按钮禁用。
   // 多实体时取体积最大的那一段（用户决策 3）。
@@ -8246,6 +8354,7 @@ export default function CadWorkspace({
                 onSelectFeatureFaces={setSelectedReferenceIds}
                 onFocusFeatureFaces={handleFocusFeatureFaces}
                 onSelectSegmentShape={handleToggleSegmentShape}
+                externalSelectionToken={externalSelectionToken}
                 treeSelectionDisabled={stepModuleTreeSelectionDisabled}
                 treeSelectionDisabledReason={stepModuleTreeSelectionDisabledReason}
                 onTogglePartVisibility={togglePartVisibility}

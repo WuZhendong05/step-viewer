@@ -28,7 +28,7 @@ function uniqueNumbers(values) {
   return out;
 }
 
-function flattenEntityIds(item) {
+export function flattenEntityIds(item) {
   const raw = Array.isArray(item?.relatedEntityIds) ? item.relatedEntityIds : [];
   const ids = [];
   for (const entry of raw) {
@@ -589,9 +589,21 @@ function buildSingleEntityTree(payload) {
   return [branchNode("part", "零件", children, TYPE_DOTS.info, typeLabel)][0];
 }
 
-// Map STEP entity ids to component face reference ids and attach faceIds to
-// every node that carries { highlight: { entityIds } }. Recurses the whole tree.
-export function resolveFeatureFaceIds(featureTree, selectorRuntime) {
+// STEP entity id -> face reference id. Cached per selectorRuntime (WeakMap): the
+// external-highlight path walks this table on every host click, and rebuilding it
+// sweeps every face reference of the whole part — noticeable at five-digit face
+// counts. resolveFeatureFaceIds (below) was the only reader and rebuilt it per
+// call; the feature tree still goes through it, so behaviour is unchanged.
+const faceIdByEntityIdCache = new WeakMap();
+
+export function buildFaceIdByEntityId(selectorRuntime) {
+  if (!selectorRuntime || typeof selectorRuntime !== "object") {
+    return new Map();
+  }
+  const cached = faceIdByEntityIdCache.get(selectorRuntime);
+  if (cached) {
+    return cached;
+  }
   const faces = Array.isArray(selectorRuntime?.faces) ? selectorRuntime.faces : [];
   const references = Array.isArray(selectorRuntime?.references) ? selectorRuntime.references : [];
   const faceIdByEntityId = new Map();
@@ -605,6 +617,14 @@ export function resolveFeatureFaceIds(featureTree, selectorRuntime) {
       faceIdByEntityId.set(entityId, reference.id);
     }
   }
+  faceIdByEntityIdCache.set(selectorRuntime, faceIdByEntityId);
+  return faceIdByEntityId;
+}
+
+// Map STEP entity ids to component face reference ids and attach faceIds to
+// every node that carries { highlight: { entityIds } }. Recurses the whole tree.
+export function resolveFeatureFaceIds(featureTree, selectorRuntime) {
+  const faceIdByEntityId = buildFaceIdByEntityId(selectorRuntime);
   const resolve = (node) => {
     if (!node || typeof node !== "object") {
       return node;
