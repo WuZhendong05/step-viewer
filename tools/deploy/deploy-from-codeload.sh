@@ -167,9 +167,27 @@ ensure_python311() {
   src="/tmp/Python-$PY_SRC_VER"
   if [ ! -d "$src" ]; then
     echo "  下载 Python $PY_SRC_VER 源码（约 26MB）…"
-    curl -fL --retry 3 --connect-timeout 20 -o /tmp/py-src.tgz \
-      "https://www.python.org/ftp/python/$PY_SRC_VER/Python-$PY_SRC_VER.tgz" \
-      || die "Python 源码下载失败：python.org 不可达（可换 $PY_SRC_VER 对应的内网镜像后手工编译到 $PY_PREFIX）"
+    # ⚠️ python.org 从国内 ECS 走国际带宽，实测可慢到 14KB/s（26MB 要 30 分钟）。
+    # 优先国内镜像（三者文件字节数完全一致 26521757），最后才回官方源。
+    # --speed-limit/--speed-time：低于 50KB/s 持续 20s 就放弃换下一个源，不再干等。
+    got=0
+    for u in \
+      "https://registry.npmmirror.com/-/binary/python/$PY_SRC_VER/Python-$PY_SRC_VER.tgz" \
+      "https://mirrors.ustc.edu.cn/python/$PY_SRC_VER/Python-$PY_SRC_VER.tgz" \
+      "https://mirrors.tuna.tsinghua.edu.cn/python/$PY_SRC_VER/Python-$PY_SRC_VER.tgz" \
+      "https://www.python.org/ftp/python/$PY_SRC_VER/Python-$PY_SRC_VER.tgz"
+    do
+      echo "    ← $u"
+      if curl -fL --retry 1 --connect-timeout 10 --max-time 300 \
+            --speed-limit 51200 --speed-time 20 \
+            -o /tmp/py-src.tgz "$u" 2>/dev/null && tar -tzf /tmp/py-src.tgz >/dev/null 2>&1; then
+        ok "源码包就绪（$(du -h /tmp/py-src.tgz | cut -f1)）"
+        got=1; break
+      fi
+      warn "该源失败或过慢，换下一个"
+      rm -f /tmp/py-src.tgz
+    done
+    [ "$got" -eq 1 ] || die "Python 源码包下载失败：所有镜像都没拿到完整包（可手工放到 /tmp/py-src.tgz 后重跑）"
     tar -xzf /tmp/py-src.tgz -C /tmp
   fi
   echo "  编译中（-j$CPU_N，约 2~4 分钟）…"
