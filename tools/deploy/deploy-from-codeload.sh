@@ -376,6 +376,7 @@ PY
   echo "  POST -> $RESP"
   JOB=$(printf '%s' "$RESP" | "$VENV_DIR/bin/python" -c 'import sys,json;print(json.load(sys.stdin).get("jobId",""))')
   [ -n "$JOB" ] || die "响应里没有 jobId"
+  PASSED=0
   for i in $(seq 1 40); do
     J=$(curl -fsS -m 10 "http://127.0.0.1:$API_PORT/api/v1/jobs/$JOB" -H "Authorization: Bearer $KEY")
     IFS='|' read -r STATUS PREWARM VURL ERRMSG <<<"$(printf '%s' "$J" | "$VENV_DIR/bin/python" -c '
@@ -385,12 +386,19 @@ r = d.get("result") or {}
 print("%s|%s|%s|%s" % (d.get("status"), d.get("prewarm"), r.get("viewerUrl", ""), d.get("error") or ""))')"
     echo "  [$i] status=$STATUS prewarm=$PREWARM ${VURL:-<无 viewerUrl>} ${ERRMSG:+err=$ERRMSG}"
     case "$STATUS" in
-      failed|error)    warn "任务失败：$ERRMSG"; break ;;
-      landed|ready|prewarmed)
-                       ok "端到端通过（$STATUS / prewarm=$PREWARM）"; break ;;
+      failed|error) warn "任务失败：$ERRMSG"; break ;;
     esac
+    # ⚠️ landed 只代表 STEP 落盘，prewarm=ready 才是 GLB 真建出来了。
+    # 之前这里 landed 就 break，会在 GLB 还在跑时误报"端到端通过"。
+    if [ "$PREWARM" = "ready" ]; then
+      ok "端到端通过（$STATUS / prewarm=ready）"; PASSED=1; break
+    fi
+    if [ "$PREWARM" = "failed" ]; then
+      warn "prewarm 失败：GLB 没建出来，看 $APP_DIR/logs/viewer.err.log"; break
+    fi
     sleep 3
   done
+  [ "$PASSED" -eq 1 ] || warn "自检未拿到 prewarm=ready（超时或失败），服务本身可能仍在正常跑"
   # 产物落盘检查
   ls -la "$APP_DIR/uploads/$JOB" 2>/dev/null || warn "任务目录不存在"
   find "$APP_DIR/uploads/$JOB" -name '*.glb' -printf '  GLB: %p %s bytes\n' 2>/dev/null | head -5
