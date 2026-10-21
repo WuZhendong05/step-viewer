@@ -709,32 +709,29 @@ def _new_task_id() -> str:
     return f"{time.strftime('%Y%m%d_%H%M%S')}_{secrets.token_hex(3)}"
 
 
-def land_uploaded_step(
-    step_name: str,
-    step_bytes: bytes,
-    features_bytes: bytes | None = None,
-    *,
-    host: str = "",
-    task_id: str | None = None,
-) -> dict:
-    """Land an uploaded STEP (+ optional feature-recognition JSON) under
-    uploads/<taskId>/ and return {url, taskId, dir, file, features} — the same
-    contract create_viewer_link returns, but built from raw bytes (multipart
-    uploads) instead of a base64 JSON payload.
+def normalise_step_name(step_name: str) -> str:
+    """Basename-collapse a caller-supplied STEP name and enforce the extension.
 
-    ``host`` is the viewer authority (``host:port``) embedded in the returned
-    URL; empty defaults to the loopback viewer. ``task_id`` overrides the
-    generated uploads directory name (used by the external API so its jobId
-    equals the on-disk task directory).
+    Shared by every landing path so a URL-derived name can never smuggle a path
+    separator (``../``) into the task directory.
+    """
+    name = os.path.basename(str(step_name or "").replace("\\", "/"))
+    if not name or os.path.splitext(name)[1].lower() not in (".step", ".stp"):
+        raise ValueError("Only .step/.stp files are supported")
+    return name
+
+
+def _land_step(step_name: str, write_step, features_bytes: bytes | None, *,
+               host: str = "", task_id: str | None = None) -> dict:
+    """Shared landing tail for every ingestion path (multipart bytes, fetched URL).
+
+    ``write_step(step_path)`` is responsible for producing the STEP file at that
+    exact path; everything after it — the feature sidecar, the on-disk layout and
+    the returned contract — stays identical no matter where the bytes came from.
     """
     import json
 
-    step_name = os.path.basename(str(step_name or "").replace("\\", "/"))
-    if not step_name or os.path.splitext(step_name)[1].lower() not in (".step", ".stp"):
-        raise ValueError("Only .step/.stp files are supported")
-    if not step_bytes:
-        raise ValueError("step content is required")
-
+    step_name = normalise_step_name(step_name)
     upload_root = _link_upload_root()
     os.makedirs(upload_root, exist_ok=True)
     task_id = task_id or _new_task_id()
@@ -742,8 +739,7 @@ def land_uploaded_step(
     os.makedirs(task_dir, exist_ok=True)
 
     step_path = os.path.join(task_dir, step_name)
-    with open(step_path, "wb") as handle:
-        handle.write(step_bytes)
+    write_step(step_path)
 
     features_name = ""
     if features_bytes:
@@ -770,6 +766,72 @@ def land_uploaded_step(
         "file": step_name,
         "features": features_name,
     }
+
+
+def land_uploaded_step(
+    step_name: str,
+    step_bytes: bytes,
+    features_bytes: bytes | None = None,
+    *,
+    host: str = "",
+    task_id: str | None = None,
+) -> dict:
+    """Land an uploaded STEP (+ optional feature-recognition JSON) under
+    uploads/<taskId>/ and return {url, taskId, dir, file, features} — the same
+    contract create_viewer_link returns, but built from raw bytes (multipart
+    uploads) instead of a base64 JSON payload.
+
+    ``host`` is the viewer authority (``host:port``) embedded in the returned
+    URL; empty defaults to the loopback viewer. ``task_id`` overrides the
+    generated uploads directory name (used by the external API so its jobId
+    equals the on-disk task directory).
+    """
+    # Checked here (before the emptiness test) so this function's error precedence is
+    # byte-for-byte what it was before the URL path was added — the viewer process
+    # shares this code.
+    normalise_step_name(step_name)
+    if not step_bytes:
+        raise ValueError("step content is required")
+
+    def _write(path: str) -> None:
+        with open(path, "wb") as handle:
+            handle.write(step_bytes)
+
+    return _land_step(step_name, _write, features_bytes, host=host, task_id=task_id)
+
+
+def land_downloaded_step(
+    step_name: str,
+    source_path: str,
+    features_bytes: bytes | None = None,
+    *,
+    host: str = "",
+    task_id: str | None = None,
+) -> dict:
+    """Land a STEP that is already sitting in a local temp file (the URL-fetch path).
+
+    The temp file is MOVED into the task directory instead of being re-read into
+    memory, so a large download is never buffered twice. ``os.replace`` is atomic
+    only within one filesystem (and the uploads root and the system temp dir are
+    routinely on different volumes here), so a cross-volume move falls back to a
+    copy-then-unlink.
+    """
+    import shutil
+
+    if not source_path or not os.path.isfile(source_path):
+        raise ValueError("downloaded step file is missing")
+
+    def _write(path: str) -> None:
+        try:
+            os.replace(source_path, path)
+        except OSError:
+            shutil.copyfile(source_path, path)
+            try:
+                os.remove(source_path)
+            except OSError:
+                pass  # a leftover temp file must not fail an otherwise good landing
+
+    return _land_step(step_name, _write, features_bytes, host=host, task_id=task_id)
 
 
 def create_viewer_link(payload: dict, host: str = "") -> dict:

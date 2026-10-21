@@ -28,6 +28,11 @@ if errorlevel 1 exit /b 2
 set "PY=%CAD_PYTHON%"
 rem Host reported back to callers as viewerUrl; LAN clients need the machine IP.
 if not defined VIEWER_HOST set "VIEWER_HOST=127.0.0.1"
+rem Hosts the API may FETCH a stepUrl from (comma-separated host suffixes / exact
+rem hosts / CIDRs). Empty = every stepUrl request is rejected with 400; the URL
+rem upload path stays off until an operator names the file host here. Override in
+rem tools\local.env.cmd when the business system moves to another file service.
+if not defined VIEWER_URL_ALLOW_HOSTS set "VIEWER_URL_ALLOW_HOSTS=*.aliyuncs.com"
 
 rem --- project-wide env vars (mirror of NSSM AppEnvironmentExtra) ---
 set "PYTHONUNBUFFERED=1"
@@ -47,7 +52,7 @@ echo. >> "%OUTLOG%"
 echo ============================================================ >> "%OUTLOG%"
 echo [%DATE% %TIME%] CADUploadApi starting (interactive session) on 0.0.0.0:8420 >> "%OUTLOG%"
 
-"%PY%" -u -m server_py.api_server --port 8420 --host 0.0.0.0 --viewer-host "%VIEWER_HOST%" --viewer-port 3245 --api-key-file "%ROOT%\secrets\api.key" >> "%OUTLOG%" 2>> "%ERRLOG%"
+"%PY%" -u -m server_py.api_server --port 8420 --host 0.0.0.0 --viewer-host "%VIEWER_HOST%" --viewer-port 3245 --api-key-file "%ROOT%\secrets\api.key" --url-allow-hosts "%VIEWER_URL_ALLOW_HOSTS%" >> "%OUTLOG%" 2>> "%ERRLOG%"
 set "RC=%ERRORLEVEL%"
 
 echo [%DATE% %TIME%] CADUploadApi exited rc=%RC% >> "%OUTLOG%"

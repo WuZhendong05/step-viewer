@@ -97,10 +97,11 @@ set PYTHONPATH=%CD%
 cd viewer
 set VIEWER_API_KEY=<你的密钥>
 set PYTHONPATH=%CD%
-python -m server_py.api_server --port 8420 --host 0.0.0.0 --viewer-host <本机IP> --viewer-port 3245
+python -m server_py.api_server --port 8420 --host 0.0.0.0 --viewer-host <本机IP> --viewer-port 3245 --url-allow-hosts "*.aliyuncs.com"
 ```
 
 - `--viewer-host <本机IP>`：决定返回的 `viewerUrl` 指向哪个地址（业务系统要能访问它，别写 127.0.0.1 除非纯本机）。
+- `--url-allow-hosts`：允许服务端**主动下载**的 `stepUrl` 白名单（host 后缀 / 精确 host / CIDR，逗号分隔）。**省略即禁用 URL 上传方式**，因为该能力会让本服务去访问调用方指定的地址。
 - 密钥建议 `--api-key-file <文件>` 代替命令行明文。
 - **后台预热（默认开启）**：落盘后立即在后台构建 GLB + 注入 `stepEntityId`，用户首次打开即秒开。
   - `--no-prewarm`：关闭预热（纯懒加载）；

@@ -58,7 +58,8 @@ set PYTHONPATH=%CD%
 cd viewer
 set VIEWER_API_KEY=<你的密钥>
 set PYTHONPATH=%CD%
-python -m server_py.api_server --port 8420 --host 0.0.0.0 --viewer-host <本机IP> --viewer-port 3245
+rem --url-allow-hosts 是 stepUrl（服务端主动下载）的白名单；省略即禁用 URL 上传
+python -m server_py.api_server --port 8420 --host 0.0.0.0 --viewer-host <本机IP> --viewer-port 3245 --url-allow-hosts "*.aliyuncs.com"
 ```
 
 自检：
